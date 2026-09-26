@@ -9,6 +9,8 @@ files:
 
 ## Problem
 
+Tracking note: this request is now collected in the project's `To Do Version 1.0.5.md`, which is the authoritative list for this version. Add further requests and clarifications there. Await the user's instruction to implement that document.
+
 The Files toolbar currently shows separate New note and New folder controls. The note plus appears to move depending on the available sidebar space and feels visually detached from the folder control. This makes the primary creation action harder to find and the two adjacent actions less clear.
 
 ## Solution

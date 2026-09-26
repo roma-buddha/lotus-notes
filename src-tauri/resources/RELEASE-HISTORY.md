@@ -2,6 +2,15 @@
 
 This is Lotus’s built-in, read-only release record. It opens from **Settings → About** and is stored with the application rather than in a vault. Every release entry records its date, user-facing behavior, compatibility or data-handling notes, and verification. Future releases must add a dated, detailed entry here before packaging.
 
+## 1.0.5 — 2026-09-26 — Sidebar creation and file-drop routing
+
+- Replace the separate Files toolbar creation controls with one fixed plus button offering Create note and Create folder.
+- Subscribe to external file drops on the current WebView, matching Tauri's native event target. Keep vault/folder targeting, safe copying, and automatic opening of the first imported note.
+
+**Compatibility:** no note-format or workspace migration changes.
+
+**Verification limits:** real cross-window Explorer/desktop dragging could not be completed through the available Windows automation tool, which rejects destinations outside the source window. This remains a manual acceptance check; see To Do Version 1.0.5.md.
+
 ## 1.0.4 — 2026-09-26 — Flexible vault notes and editing menus
 
 - Allow Markdown notes directly in a vault as well as inside one of its folders. Explorer drops onto a vault or folder copy the files safely and open the first imported note.

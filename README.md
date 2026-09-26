@@ -23,7 +23,7 @@ git clone https://github.com/roma-buddha/lotus-notes.git lotus
 cd lotus
 npm ci
 npm run package:win
-Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.4_x64-setup.exe
+Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.5_x64-setup.exe
 ```
 
 For development rather than installation, run `npm run dev` after `npm ci`.
@@ -65,7 +65,7 @@ Lotus/                        # your chosen storage folder
   .lotus-state/               # locks, area metadata and migration records
 ```
 
-Notes live directly in a **Vault**, or in a folder inside that vault. The wider bottom-left vault picker has a settings icon for each vault and a plus beside Find a vault for **Create vault** / **Add existing vault…**. The sidebar’s top New folder button acts on the current vault. The searchable vault dropdown shows one vault’s folders and notes at a time without changing open tabs. Vault menus create folders or notes; folder menus create notes. The New note button and Ctrl+N use the selected folder or vault. Folders cannot contain subfolders. Drop `.md` or `.markdown` files from Explorer or the desktop onto a vault selector or the sidebar’s empty space to copy them into that vault; dropping onto a folder copies them there. The first imported note opens automatically, and duplicate filenames receive a numeric suffix. Duplicate names are never overwritten. Move/rename does not rewrite links inside Markdown files.
+Notes live directly in a **Vault**, or in a folder inside that vault. The wider bottom-left vault picker has a settings icon for each vault and a plus beside Find a vault for **Create vault** / **Add existing vault…**. The plus beside Files offers **Create note** and **Create folder**. Create folder acts on the current vault; Create note and Ctrl+N use the selected folder or vault. The searchable vault dropdown shows one vault’s folders and notes at a time without changing open tabs. Vault menus create folders or notes; folder menus create notes. Folders cannot contain subfolders. Drop `.md` or `.markdown` files from Explorer or the desktop onto a vault selector or the sidebar’s empty space to copy them into that vault; dropping onto a folder copies them there. The first imported note opens automatically, and duplicate filenames receive a numeric suffix. Duplicate names are never overwritten. Move/rename does not rewrite links inside Markdown files.
 
 Folder/note creation inserts an Untitled folder/Untitled row directly into the tree with its name selected. Creation and rename happen inline: **Enter** confirms, **Escape** cancels. The complete temporary row has a rounded accent outline and the same indentation and folder arrow as its neighboring rows. Vault settings opens beside the vault picker; its gear is at the right of each vault row and a pencil beside the name starts inline rename. Settings retains reveal and **Remove from sidebar**, which leaves files unchanged; restore hidden registrations through **Hidden vaults**.
 

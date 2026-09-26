@@ -1,4 +1,6 @@
 import { markdownDropTarget } from "./core/markdownDrop";
+import { CreateMenu } from "./CreateMenu";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   lazy,
   Suspense,
@@ -1481,7 +1483,9 @@ export default function App() {
         }),
       );
     };
-    void getCurrentWindow()
+    // Drag events originate from the WebView. A Window-targeted listener misses
+    // those events, notably when native browser child views are present.
+    void getCurrentWebview()
       .onDragDropEvent((event) => {
         if (event.payload.type === "leave") {
           // Moving an Explorer drag between the main WebView and a browser
@@ -2753,22 +2757,12 @@ export default function App() {
             <span>
               {searchOpen ? "Search" : bookmarksOpen ? "Bookmarks" : "Files"}
             </span>
-            <Icon
-              label="New note"
-              disabled={!canCreateNote || bookmarksOpen || searchOpen}
-              onClick={() => showCreate("note")}
-            >
-              <Plus size={16} />
-            </Icon>
-            <Icon
-              label="New folder"
+            <CreateMenu
               disabled={!activeVault || bookmarksOpen || searchOpen}
-              onClick={() =>
-                activeVault && showCreate("folder", activeVault.path)
+              create={(kind) =>
+                activeVault && showCreate(kind, kind === "folder" ? activeVault.path : folder)
               }
-            >
-              <FolderPlus size={16} />
-            </Icon>
+            />
           </div>
 
           {searchOpen && (

@@ -2394,7 +2394,8 @@ dialog > .dialog-hint {
 /* Lotus 0.8: predictable editing, compact menus, independent panes. */
 .files-toolbar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 8px;
   align-items: center;
   padding: 10px 16px 6px;
   color: var(--muted);

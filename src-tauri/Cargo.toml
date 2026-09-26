@@ -1,6 +1,6 @@
 [package]
 name = "lotus"
-version = "1.0.4"
+version = "1.0.5"
 description = "Markdown vaults, folders, and notes"
 edition = "2021"
 
