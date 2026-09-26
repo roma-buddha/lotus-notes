@@ -1,3 +1,4 @@
+import { markdownDropTarget } from "./core/markdownDrop";
 import {
   lazy,
   Suspense,
@@ -301,7 +302,6 @@ export default function App() {
     url: string;
     query: string;
   } | null>(null);
-  const [folderPicker, setFolderPicker] = useState<Entry | null>(null);
   const [conversion, setConversion] = useState<{
     source: Entry;
     parent: string;
@@ -465,8 +465,8 @@ export default function App() {
   const folder =
     selectedEntry?.kind === "note"
       ? parentOf(selectedEntry.path)
-      : (selectedEntry?.path ?? "");
-  const canCreateNote = folder.split("/").length === 2;
+      : (selectedEntry?.path ?? activeVault?.path ?? "");
+  const canCreateNote = !!folder;
   const draftKey = (path: string) =>
     `notus-draft:${current.current.root}:${windowLabel}:${path}`;
   const viewPositions = useRef(
@@ -1062,20 +1062,26 @@ export default function App() {
       );
   };
   const showLink = (target: EditTarget) => {
-    const match = [...target.text.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)].find(
+    const match = [...target.text.matchAll(/\[([^\]]+)\]\(([^)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g)].find(
       (m) => m.index! <= target.from && m.index! + m[0].length >= target.to,
     );
     setLinkDialog({
       target: match
         ? { ...target, from: match.index!, to: match.index! + match[0].length }
         : target,
-      label: match?.[1] || target.text.slice(target.from, target.to),
-      url: match?.[2] || "",
+      label: match?.[1] || match?.[4] || match?.[3] || target.text.slice(target.from, target.to),
+      url: match?.[2] || match?.[3] || "",
       query: "",
     });
   };
-  const live = useRef({ save: saveAll, refresh, loadDocument, status });
-  live.current = { save: saveAll, refresh, loadDocument, status };
+  const live = useRef({
+    save: saveAll,
+    refresh,
+    loadDocument,
+    openNote,
+    status,
+  });
+  live.current = { save: saveAll, refresh, loadDocument, openNote, status };
   useEffect(() => {
     let cancelled = false;
     const requestedNote = new URLSearchParams(window.location.search).get(
@@ -1452,29 +1458,28 @@ export default function App() {
       // pixels. Compare against the rows themselves rather than using
       // elementsFromPoint: a native WebView2 child can sit above DOM hit
       // testing even though the Explorer drag is physically over the sidebar.
-      const scale = window.devicePixelRatio || 1;
-      for (const [x, y] of [
-        [position.x / scale, position.y / scale],
-        // The fallback also supports older WebView2/Tauri combinations that
-        // have already converted the event position to logical pixels.
-        [position.x, position.y],
-      ]) {
-        const row = [
+      return markdownDropTarget(
+        position,
+        window.devicePixelRatio || 1,
+        [
           ...document.querySelectorAll<HTMLElement>(
-            ".tree-row.kind-folder[data-path]",
+            ".tree-row.kind-folder[data-path], [data-vault-drop]",
           ),
-        ].find((element) => {
+        ].map((element) => {
           const bounds = element.getBoundingClientRect();
-          return (
-            x >= bounds.left &&
-            x <= bounds.right &&
-            y >= bounds.top &&
-            y <= bounds.bottom
-          );
-        });
-        if (row?.dataset.path) return row.dataset.path;
-      }
-      return "";
+          const viewport = element
+            .closest(".file-tree")
+            ?.getBoundingClientRect();
+          return {
+            path: element.dataset.vaultDrop ?? element.dataset.path ?? "",
+            folder: element.classList.contains("kind-folder"),
+            left: Math.max(bounds.left, viewport?.left ?? bounds.left),
+            right: Math.min(bounds.right, viewport?.right ?? bounds.right),
+            top: Math.max(bounds.top, viewport?.top ?? bounds.top),
+            bottom: Math.min(bounds.bottom, viewport?.bottom ?? bounds.bottom),
+          };
+        }),
+      );
     };
     void getCurrentWindow()
       .onDragDropEvent((event) => {
@@ -1492,8 +1497,10 @@ export default function App() {
           window.clearTimeout(clearFolderTargetTimer);
           clearFolderTargetTimer = undefined;
         }
-        const target = folderAt(event.payload.position) || lastFolderTarget;
-        if (target) lastFolderTarget = target;
+        const target =
+          folderAt(event.payload.position) ||
+          (event.payload.type === "drop" ? lastFolderTarget : "");
+        lastFolderTarget = target;
         setExternalDropTarget(target);
         if (event.payload.type !== "drop") return;
         clearFolderTarget();
@@ -1502,7 +1509,9 @@ export default function App() {
         );
         if (!target || !sources.length) {
           if (!target)
-            setError("Drop Markdown files onto a folder in the sidebar.");
+            setError(
+              "Drop Markdown files onto a vault or folder in the sidebar.",
+            );
           else setError("Only .md and .markdown files can be imported.");
           return;
         }
@@ -1513,7 +1522,8 @@ export default function App() {
             next.delete(target);
             return next;
           });
-          await live.current.refresh();
+          await loadDirectory(target, false, true);
+          if (imported[0]) await live.current.openNote(imported[0]);
           setNotice(
             `Imported ${imported.length} Markdown ${imported.length === 1 ? "file" : "files"}.`,
           );
@@ -2007,7 +2017,7 @@ export default function App() {
       if (e.key.toLowerCase() === "n") {
         e.preventDefault();
         if (canCreateNote) showCreate("note");
-        else setNotice("Select a folder inside a vault to create a note.");
+        else setNotice("Select a vault or folder to create a note.");
       }
       if (e.key.toLowerCase() === "b") {
         e.preventDefault();
@@ -2744,6 +2754,13 @@ export default function App() {
               {searchOpen ? "Search" : bookmarksOpen ? "Bookmarks" : "Files"}
             </span>
             <Icon
+              label="New note"
+              disabled={!canCreateNote || bookmarksOpen || searchOpen}
+              onClick={() => showCreate("note")}
+            >
+              <Plus size={16} />
+            </Icon>
+            <Icon
               label="New folder"
               disabled={!activeVault || bookmarksOpen || searchOpen}
               onClick={() =>
@@ -2789,7 +2806,17 @@ export default function App() {
               </button>
             </label>
           )}
-          <nav className="file-tree" aria-label="Vaults and notes">
+          <nav
+            className={`file-tree ${externalDropTarget === activeVault?.path ? "drop-target" : ""}`}
+            aria-label="Vaults and notes"
+            data-vault-drop={
+              !searchOpen && !bookmarksOpen ? activeVault?.path : undefined
+            }
+            data-path={
+              !searchOpen && !bookmarksOpen ? activeVault?.path : undefined
+            }
+            data-kind={!searchOpen && !bookmarksOpen ? "vault" : undefined}
+          >
             {bookmarksOpen ? (
               <div className="bookmarks-list">
                 {flatten(snapshot.entries)
@@ -4018,27 +4045,6 @@ export default function App() {
           ]}
         />
       )}
-      {folderPicker && (
-        <Modal
-          title="Choose a folder for the new note"
-          onClose={() => setFolderPicker(null)}
-        >
-          {folderPicker.children.map((folder) => (
-            <button
-              key={folder.path}
-              onClick={() => {
-                showCreate("note", folder.path);
-                setFolderPicker(null);
-              }}
-            >
-              {folder.name}
-            </button>
-          ))}
-          {!folderPicker.children.length && (
-            <p>Create a folder inside this vault first.</p>
-          )}
-        </Modal>
-      )}
       {conversion && (
         <Modal
           title="Convert vault to a folder"
@@ -4526,10 +4532,7 @@ export default function App() {
                       </button>
                       <button
                         role="menuitem"
-                        onClick={() => {
-                          setFolderPicker(actions.entry);
-                          setActions(null);
-                        }}
+                        onClick={() => showCreate("note", actions.entry.path)}
                       >
                         Create note…
                       </button>

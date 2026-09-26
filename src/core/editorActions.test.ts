@@ -85,10 +85,15 @@ describe("selection-safe formatting", () => {
     expect(
       items
         .find((i) => i.label === "Insert")
-        ?.children?.filter((i) => i.label !== "Link…")
+        ?.children?.filter((i) => i.label !== "Link")
         .every((i) => i.disabled),
     ).toBe(true);
-    expect(items.find((i) => i.label === "Remove link")?.disabled).toBe(true);
+    expect(
+      items
+        .find((i) => i.label === "Insert")
+        ?.children?.find((i) => i.label === "Link")
+        ?.children?.find((i) => i.label === "Remove link")?.disabled,
+    ).toBe(true);
   });
   it("changes only selected text and removes color cleanly", () => {
     const t = target("Before word after", 7, 11);
@@ -161,6 +166,52 @@ describe("selection-safe formatting", () => {
           );
       }
     }
+  });
+  it("keeps link actions inside Insert and removes links without deleting their labels", () => {
+    let opened = 0;
+    const options = {
+      locked: false,
+      lock: () => {},
+      bookmarked: false,
+      bookmark: () => {},
+      link: () => {
+        opened++;
+      },
+      table: () => {},
+      search: () => {},
+      error: () => {},
+    };
+    for (const source of [
+      "[Example](https://example.com)",
+      "[[Note|Example]]",
+    ]) {
+      const t = target(
+        source,
+        source.indexOf("Example"),
+        source.indexOf("Example") + 7,
+      );
+      const menu = editorItems(t.value, options);
+      expect(menu.some((i) => /link/i.test(i.label))).toBe(false);
+      const insert = menu.find((i) => i.label === "Insert")!.children!;
+      expect(insert.map((i) => i.label)).toEqual([
+        "Link",
+        "Table…",
+        "Callout",
+        "Horizontal line",
+      ]);
+      const links = insert[0].children!;
+      expect(links.find((i) => i.label === "Add link…")!.disabled).toBe(true);
+      expect(links.find((i) => i.label === "Edit link…")!.disabled).toBe(false);
+      links.find((i) => i.label === "Edit link…")!.run!();
+      links.find((i) => i.label === "Remove link")!.run!();
+      expect(t.result()).toBe("Example");
+    }
+    const links = editorItems(target("plain").value, options).find(
+      (i) => i.label === "Insert",
+    )!.children![0].children!;
+    expect(links.map((i) => !!i.disabled)).toEqual([false, true, true]);
+    links[0].run!();
+    expect(opened).toBe(3);
   });
   it("disables edits while locked", () => {
     const menu = editorItems(null, {

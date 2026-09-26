@@ -3278,3 +3278,12 @@ body:has(.vault-settings[aria-label="Vault settings"])::after {
 .settings-content hr { border:0; border-top:1px solid var(--line); margin:18px 0; }
 .vault-area-control { display:flex; align-items:center; gap:8px; }
 .vault-area-control select { flex:1; min-width:0; }
+
+.file-tree.drop-target { outline: 1px solid var(--accent); outline-offset: -2px; background: var(--soft); }
+
+.cm-horizontal-line { display:inline-block; width:100%; border-top:1px solid currentColor; opacity:0.4; vertical-align:middle; }
+
+.organizer-tree .organizer-note { touch-action:none; cursor:grab; user-select:none; }
+.organizer-tree .organizer-dragging { opacity:0.5; }
+.organizer-tree .organizer-dragging .organizer-note { cursor:grabbing; }
+.explorer-vault > summary.drop-target { background:var(--soft); outline:1px solid var(--accent); border-radius:4px; }

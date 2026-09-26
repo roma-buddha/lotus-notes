@@ -382,8 +382,8 @@ impl Workspace {
     }
     pub fn read(&self, relative: &str) -> Result<Document> {
         let path = self.resolve(relative)?;
-        if !is_note(&path) || depth(relative) != 3 {
-            return Err("Open a Markdown note inside a folder in a vault.".into());
+        if !is_note(&path) || !(2..=3).contains(&depth(relative)) {
+            return Err("Open a Markdown note inside a vault.".into());
         }
         let content = fs::read_to_string(&path).map_err(err)?;
         Ok(Document {
@@ -423,7 +423,7 @@ impl Workspace {
         match kind {
             "vault" if parent.is_empty() => {}
             "folder" if depth(parent) == 1 => {}
-            "note" if depth(parent) == 2 => {}
+            "note" if (1..=2).contains(&depth(parent)) => {}
             _ => return Err("Select a vault or a folder inside a vault first.".into()),
         }
         let name = if kind == "note" && !is_note(Path::new(name)) {
@@ -462,8 +462,8 @@ impl Workspace {
     /// Copy external Markdown files into an existing vault folder. Originals are
     /// never moved or modified, and source links are rejected before copying.
     pub fn import_markdown(&self, parent: &str, sources: &[String]) -> Result<Vec<String>> {
-        if depth(parent) != 2 || sources.is_empty() {
-            return Err("Drop Markdown files onto a folder inside a vault.".into());
+        if !(1..=2).contains(&depth(parent)) || sources.is_empty() {
+            return Err("Drop Markdown files onto a vault or one of its folders.".into());
         }
         if sources.len() > 100 {
             return Err("Drop up to 100 Markdown files at a time.".into());
@@ -525,8 +525,8 @@ impl Workspace {
             return Err("Select an existing destination folder.".into());
         }
         let file = source.is_file();
-        if file && (!is_note(&source) || depth(parent) != 2) {
-            return Err("Notes must be inside a folder in a vault.".into());
+        if file && (!is_note(&source) || !(1..=2).contains(&depth(parent))) {
+            return Err("Notes must be inside a vault or one of its folders.".into());
         }
         if !file
             && ((depth(relative) == 1 && !parent.is_empty())
@@ -582,13 +582,13 @@ impl Workspace {
             n += 1;
         }
         let staging = tempfile::tempdir_in(&self.root).map_err(err)?;
-        copy_folder(&source, staging.path(), true)?;
+        copy_folder(&source, staging.path())?;
         fs::rename(staging.path(), self.root.join(&name)).map_err(err)?;
         self.migrate()?;
         Ok(name)
     }
 }
-fn copy_folder(source: &Path, dest: &Path, root: bool) -> Result<()> {
+fn copy_folder(source: &Path, dest: &Path) -> Result<()> {
     for entry in fs::read_dir(source).map_err(err)? {
         let entry = entry.map_err(err)?;
         let name = entry.file_name();
@@ -599,19 +599,11 @@ fn copy_folder(source: &Path, dest: &Path, root: bool) -> Result<()> {
         if kind.is_symlink() {
             return Err("Import contains a symbolic link. Import ordinary folders instead.".into());
         }
-        let mut target = dest.join(&name);
+        let target = dest.join(&name);
         if kind.is_dir() {
             fs::create_dir_all(&target).map_err(err)?;
-            copy_folder(&entry.path(), &target, false)?;
+            copy_folder(&entry.path(), &target)?;
         } else {
-            if root && is_note(&entry.path()) {
-                let mut imported = "Imported root notes".to_string();
-                while source.join(&imported).exists() {
-                    imported.push('_');
-                }
-                target = dest.join(imported).join(&name);
-                fs::create_dir_all(target.parent().unwrap()).map_err(err)?;
-            }
             fs::copy(entry.path(), target).map_err(err)?;
         }
     }
@@ -628,7 +620,10 @@ mod tests {
         w.create("", "vault", "Work").unwrap();
         w.create("", "vault", "Personal").unwrap();
         assert!(w.create("", "note", "Rogue").is_err());
-        assert!(w.create("Work", "note", "Overview").is_err());
+        assert_eq!(
+            w.create("Work", "note", "Overview").unwrap(),
+            "Work/Overview.md"
+        );
         w.create("Work", "folder", "Ideas").unwrap();
         assert!(w.create("Work/Ideas", "folder", "Nested").is_err());
         w.create("Personal", "folder", "Journal").unwrap();
@@ -644,6 +639,58 @@ mod tests {
         assert!(!w.resolve(&note).unwrap().exists());
         assert!(w.relocate("Work/Ideas", "Work/Ideas", "Child").is_err());
         assert!(w.create("Personal/Journal", "note", "First").is_err());
+    }
+    #[test]
+    fn vault_root_notes_support_edit_move_search_and_trash_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let w = Workspace::new(temp.path().into()).unwrap();
+        w.create("", "vault", "Work").unwrap();
+        w.create("Work", "folder", "Ideas").unwrap();
+        let note = w.create("Work", "note", "Overview").unwrap();
+        let original = w.read(&note).unwrap();
+        let saved = w
+            .write(&note, "Root note content", &original.revision)
+            .unwrap();
+        assert!(w.write(&note, "stale", &original.revision).is_err());
+        assert!(w
+            .directory("Work", false, &|| Ok(()))
+            .unwrap()
+            .iter()
+            .any(|e| e.path == note));
+        assert_eq!(w.search("Root note content", 10).unwrap()[0].path, note);
+        assert!(w.relocate(&note, "", "Outside.md").is_err());
+        let nested = w.relocate(&note, "Work/Ideas", "Overview.md").unwrap();
+        let root = w.relocate(&nested, "Work", "Renamed.md").unwrap();
+        assert_eq!(w.read(&root).unwrap().content, saved.content);
+        w.remove(&root).unwrap();
+        let trashed = w.list_trash().unwrap();
+        assert_eq!(w.restore(&trashed[0].id).unwrap(), root);
+        assert_eq!(w.read(&root).unwrap().content, saved.content);
+        let reopened = Workspace::new(temp.path().into()).unwrap();
+        assert_eq!(reopened.read(&root).unwrap().content, saved.content);
+    }
+    #[test]
+    fn markdown_can_be_dropped_into_vault_root_without_overwriting() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = outside.path().join("Desktop.markdown");
+        fs::write(&source, "# Desktop\r\nUnchanged bytes").unwrap();
+        let w = Workspace::new(temp.path().into()).unwrap();
+        w.create("", "vault", "Work").unwrap();
+        let sources = vec![source.to_string_lossy().into_owned()];
+        assert!(w.import_markdown("", &sources).is_err());
+        let first = w.import_markdown("Work", &sources).unwrap();
+        let second = w.import_markdown("Work", &sources).unwrap();
+        assert_eq!(first, ["Work/Desktop.markdown"]);
+        assert_eq!(second, ["Work/Desktop (2).markdown"]);
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            fs::read(w.resolve(&first[0]).unwrap()).unwrap()
+        );
+        assert_eq!(
+            w.read(&second[0]).unwrap().content,
+            "# Desktop\r\nUnchanged bytes"
+        );
     }
     #[test]
     fn validates_boundaries_and_names() {
@@ -673,9 +720,7 @@ mod tests {
         let w = Workspace::new(temp.path().into()).unwrap();
         let vault = w.import(&source).unwrap();
         assert_eq!(
-            w.read(&format!("{vault}/Imported root notes/Existing.md"))
-                .unwrap()
-                .content,
+            w.read(&format!("{vault}/Existing.md")).unwrap().content,
             "my writing"
         );
         assert_eq!(

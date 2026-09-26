@@ -54,29 +54,9 @@ export function editorItems(
         .catch((e) => options.error(String(e)));
   };
   return [
-    { label: "Add or edit link…", disabled: editing, run: options.link },
-    {
-      label: "Remove link",
-      disabled: editing || !enclosingLink,
-      run: () => {
-        if (!target) return;
-        const pattern =
-          /\[([^\]]+)\]\(([^)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
-        const match = [...target.text.matchAll(pattern)].find(
-          (m) => m.index! <= target.from && m.index! + m[0].length >= target.to,
-        );
-        if (match)
-          target.replace(
-            match.index!,
-            match.index! + match[0].length,
-            match[1] || match[4] || match[3],
-          );
-      },
-    },
     {
       label: "Format",
       disabled: editing,
-      separator: true,
       children: [
         wrap("Bold", "**"),
         wrap("Italic", "*"),
@@ -120,24 +100,45 @@ export function editorItems(
       label: "Insert",
       disabled: editing,
       children: [
-        { label: "Link…", run: options.link },
+        {
+          label: "Link",
+          children: [
+            {
+              label: "Add link…",
+              disabled: editing || !!enclosingLink,
+              run: options.link,
+            },
+            {
+              label: "Edit link…",
+              disabled: editing || !enclosingLink,
+              run: options.link,
+            },
+            {
+              label: "Remove link",
+              disabled: editing || !enclosingLink,
+              run: () => {
+                if (!target) return;
+                const pattern =
+                  /\[([^\]]+)\]\(([^)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+                const match = [...target.text.matchAll(pattern)].find(
+                  (m) =>
+                    m.index! <= target.from &&
+                    m.index! + m[0].length >= target.to,
+                );
+                if (match)
+                  target.replace(
+                    match.index!,
+                    match.index! + match[0].length,
+                    match[1] || match[4] || match[3],
+                  );
+              },
+            },
+          ],
+        },
         {
           label: "Table…",
           disabled: target?.kind === "cell",
           run: options.table,
-        },
-        {
-          label: "Footnote",
-          disabled: target?.kind === "cell",
-          run: () => {
-            if (!target) return;
-            const id = "note-" + Date.now().toString(36);
-            target.replace(
-              target.from,
-              target.text.length,
-              `[^${id}]${target.text.slice(target.to)}\n\n[^${id}]: ${text || "Footnote text"}\n`,
-            );
-          },
         },
         {
           label: "Callout",
@@ -145,19 +146,9 @@ export function editorItems(
           run: () => target && blockTarget(target, "callout"),
         },
         {
-          label: "Horizontal rule",
+          label: "Horizontal line",
           disabled: target?.kind === "cell",
           run: () => target && blockTarget(target, "rule"),
-        },
-        {
-          label: "Code block",
-          disabled: target?.kind === "cell",
-          run: () => target && blockTarget(target, "code"),
-        },
-        {
-          label: "Math block",
-          disabled: target?.kind === "cell",
-          run: () => target && blockTarget(target, "math"),
         },
       ],
     },

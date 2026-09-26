@@ -42,6 +42,9 @@ export function VaultSwitcher({
     <div className="vault-switcher">
       <button
         className="vault-choice"
+        data-vault-drop={active?.path}
+        data-path={active?.path}
+        data-kind="vault"
         aria-label="Choose vault"
         aria-expanded={!!panel}
         onClick={(e) => {
@@ -122,6 +125,9 @@ export function VaultSwitcher({
                       </button>
                       <button
                         className="vault-option-name"
+                        data-vault-drop={entry.path}
+                        data-path={entry.path}
+                        data-kind="vault"
                         aria-current={
                           entry.path === active?.path ? "true" : undefined
                         }

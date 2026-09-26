@@ -382,7 +382,7 @@ try {
   );
   r = await selectWord("anchorword");
   await page.mouse.click(r.x + 5, r.y + 5, { button: "right" });
-  await menu("Add or edit link…");
+  await menu("Insert", "Link", "Add link…");
   await page
     .getByLabel("Website or note path", { exact: true })
     .fill("../../Personal/Journal/Beta.md");
@@ -397,7 +397,7 @@ try {
   );
   r = await selectWord("anchorword");
   await page.mouse.click(r.x + 5, r.y + 5, { button: "right" });
-  await menu("Remove link");
+  await menu("Insert", "Link", "Remove link");
   await pause(150);
   assert.ok(
     Math.abs(

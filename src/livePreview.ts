@@ -24,7 +24,16 @@ class ListMarker extends WidgetType {
     return span;
   }
 }
-function decorate(view: EditorView) {
+class HorizontalLine extends WidgetType {
+  toDOM() {
+    const line = document.createElement("span");
+    line.className = "cm-horizontal-line";
+    line.setAttribute("role", "separator");
+    line.setAttribute("aria-label", "Horizontal line");
+    return line;
+  }
+}
+export function decorate(view: Pick<EditorView, "state">) {
   const ranges: Range<Decoration>[] = [],
     hidden: Range<Decoration>[] = [];
   const hide = (from: number, to: number, widget?: WidgetType) => {
@@ -45,10 +54,16 @@ function decorate(view: EditorView) {
     ? []
     : findTables(view.state.doc.toString());
   const blocked = (at: number) => tables.some((t) => at >= t.from && at < t.to);
+  const horizontalLines = new Set<number>();
   syntaxTree(view.state).iterate({
     enter(node) {
       if (blocked(node.from)) return false;
       const name = node.name;
+      if (name === "HorizontalRule" && !view.state.facet(inlineOnly)) {
+        hide(node.from, node.to, new HorizontalLine());
+        horizontalLines.add(view.state.doc.lineAt(node.from).from);
+        return false;
+      }
       if (name === "FencedCode" || name === "CodeBlock") return false;
       if (["EmphasisMark", "CodeMark", "StrikethroughMark"].includes(name))
         hide(node.from, node.to);
@@ -69,7 +84,8 @@ function decorate(view: EditorView) {
       fenced = !fenced;
       continue;
     }
-    if (fenced || blocked(line.from)) continue;
+    if (fenced || blocked(line.from) || horizontalLines.has(line.from))
+      continue;
     const heading = line.text.match(/^(#{1,6})\s+/);
     if (heading && !view.state.facet(inlineOnly)) {
       ranges.push(

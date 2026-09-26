@@ -1,3 +1,4 @@
+import { useOrganizerDrag } from "./useOrganizerDrag";
 import { externalMoves } from "./core/fileChanges";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -28,6 +29,30 @@ export function WorkspaceOrganizer({
   open: (path: string) => Promise<void>;
   actions: (entry: Entry, anchor: Anchor) => void;
 }) {
+  const noteRow = (note: Entry) => (
+    <li
+      key={note.path}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        actions(note, {
+          ...anchorAt(e.currentTarget),
+          x: e.clientX,
+          y: e.clientY,
+        });
+      }}
+      className={drag.source === note.path ? "organizer-dragging" : undefined}
+    >
+      <button
+        {...drag.handlers(note.path)}
+        className="organizer-note"
+        title={note.path}
+        disabled={busy}
+        onClick={() => void run(() => open(note.path))}
+      >
+        {stem(note.name)}
+      </button>
+    </li>
+  );
   const [name, setName] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const previousEntries = useRef(entries);
@@ -52,7 +77,6 @@ export function WorkspaceOrganizer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [over, setOver] = useState("");
   const [query, setQuery] = useState("");
   const [undo, setUndo] = useState<{ source: string; parent: string } | null>(
     null,
@@ -77,8 +101,14 @@ export function WorkspaceOrganizer({
       source: `${parent}/${source.split("/").at(-1)!}`,
       parent: parentOf(source),
     });
+    setExpanded((current) => new Set([...current, parent.split("/")[0], parent]));
     setMessage("Note moved.");
   };
+  const drag = useOrganizerDrag(
+    busy,
+    (source, destination) => void run(() => relocate(source, destination)),
+    (destination) => setExpanded((current) => new Set([...current, destination])),
+  );
   const matches = (e: Entry): boolean =>
     e.name.toLowerCase().includes(query.toLowerCase()) ||
     e.children.some(matches);
@@ -110,6 +140,7 @@ export function WorkspaceOrganizer({
   })();
   return (
     <section
+      ref={drag.root}
       className="organizer compact-organizer"
       aria-label="Workspace organizer"
       aria-busy={busy}
@@ -300,6 +331,8 @@ export function WorkspaceOrganizer({
                 key={vault.path}
               >
                 <summary
+                  data-organizer-destination={vault.path}
+                  className={drag.over === vault.path ? "drop-target" : undefined}
                   onClick={(e) => {
                     e.preventDefault();
                     toggle(vault.path);
@@ -326,7 +359,12 @@ export function WorkspaceOrganizer({
                     <Ellipsis size={15} />
                   </button>
                 </summary>
-                {vault.children
+                <ul>
+                  {vault.children.filter((n) => n.kind === "note" &&
+                    (vault.name.toLowerCase().includes(query.toLowerCase()) || matches(n)))
+                    .map(noteRow)}
+                </ul>
+                {vault.children.filter((entry) => entry.kind === "folder")
                   .filter(
                     (f) =>
                       vault.name.toLowerCase().includes(query.toLowerCase()) ||
@@ -337,40 +375,9 @@ export function WorkspaceOrganizer({
                       open={!!query || expanded.has(folder.path)}
                       key={folder.path}
                       data-folder={folder.path}
-                      className={`explorer-folder ${over === folder.path ? "drop-target" : ""}`}
-                      onDragOver={(e) => {
-                        if (
-                          !busy &&
-                          e.dataTransfer.types.includes("notus-note")
-                        ) {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          e.dataTransfer.dropEffect = "move";
-                          setOver(folder.path);
-                        }
-                      }}
-                      onDragLeave={(e) => {
-                        if (
-                          !e.currentTarget.contains(
-                            e.relatedTarget as Node | null,
-                          )
-                        )
-                          setOver("");
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setOver("");
-                        if (
-                          e.dataTransfer.getData("text/notus-kind") === "note"
-                        )
-                          void run(() =>
-                            relocate(
-                              e.dataTransfer.getData("text/notus-path"),
-                              folder.path,
-                            ),
-                          );
-                      }}
+                      className={`explorer-folder ${drag.over === folder.path ? "drop-target" : ""}`}
+                      data-organizer-destination={folder.path}
+
                     >
                       <summary
                         onClick={(e) => {
@@ -413,46 +420,12 @@ export function WorkspaceOrganizer({
                                 .includes(query.toLowerCase()) ||
                               matches(n),
                           )
-                          .map((note) => (
-                            <li
-                              key={note.path}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                actions(note, {
-                                  ...anchorAt(e.currentTarget),
-                                  x: e.clientX,
-                                  y: e.clientY,
-                                });
-                              }}
-                              draggable={!busy}
-                              onDragStart={(e) => {
-                                e.dataTransfer.setData("notus-note", "1");
-                                e.dataTransfer.setData(
-                                  "text/notus-kind",
-                                  "note",
-                                );
-                                e.dataTransfer.setData(
-                                  "text/notus-path",
-                                  note.path,
-                                );
-                                e.dataTransfer.effectAllowed = "move";
-                              }}
-                            >
-                              <button
-                                className="organizer-note"
-                                title={note.path}
-                                disabled={busy}
-                                onClick={() => void run(() => open(note.path))}
-                              >
-                                {stem(note.name)}
-                              </button>
-                            </li>
-                          ))}
+                          .map(noteRow)}
                       </ul>
                     </details>
                   ))}
                 {!vault.children.length && (
-                  <p className="folder-empty">No folders yet</p>
+                  <p className="folder-empty">No notes or folders yet</p>
                 )}
               </details>
                 ))}

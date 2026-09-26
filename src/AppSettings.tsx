@@ -365,7 +365,7 @@ export function AppSettings({
                 </button>
               </div>
               <p className="muted">
-                Vault → Folder → Note. Imported nested folders are safely
+                Notes live in vaults, optionally inside a folder. Imported nested folders are safely
                 flattened into uniquely named folders.
               </p>
             </>

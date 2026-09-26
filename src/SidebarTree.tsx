@@ -261,7 +261,10 @@ export function SidebarTree(props: Props) {
                         ? "pointer-drop-before"
                         : "pointer-drop-after",
                     );
-                  } else if (target.dataset.kind === "folder") {
+                  } else if (
+                    target.dataset.kind === "folder" ||
+                    target.dataset.kind === "vault"
+                  ) {
                     target.classList.add("pointer-drop-target");
                   }
                 }}
@@ -337,7 +340,10 @@ export function SidebarTree(props: Props) {
                           })();
                     if (targetPath !== drag.path)
                       onReorder(drag.path, targetParent, before);
-                  } else if (target?.dataset.kind === "folder") {
+                  } else if (
+                    target?.dataset.kind === "folder" ||
+                    target?.dataset.kind === "vault"
+                  ) {
                     const destination = target.dataset.path;
                     if (destination) onMove(drag.path, destination);
                   }
@@ -461,7 +467,8 @@ export function SidebarTree(props: Props) {
                   if (
                     path &&
                     ((entry.kind === "folder" && kind === "note") ||
-                      (entry.kind === "vault" && kind === "folder"))
+                      (entry.kind === "vault" &&
+                        (kind === "folder" || kind === "note")))
                   )
                     onMove(path, entry.path);
                 }}

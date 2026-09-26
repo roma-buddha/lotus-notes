@@ -2,6 +2,16 @@
 
 This is Lotus’s built-in, read-only release record. It opens from **Settings → About** and is stored with the application rather than in a vault. Every release entry records its date, user-facing behavior, compatibility or data-handling notes, and verification. Future releases must add a dated, detailed entry here before packaging.
 
+## 1.0.4 — 2026-09-26 — Flexible vault notes and editing menus
+
+- Allow Markdown notes directly in a vault as well as inside one of its folders. Explorer drops onto a vault or folder copy the files safely and open the first imported note.
+- Add pointer-based note dragging in the organizer so notes can move between folders and vaults, with highlighted destinations and an Undo action.
+- Simplify Insert to Link, Table, Callout, and Horizontal line. Link creation, editing, and removal now live under Insert → Link, and Markdown separators render as visible lines in the editor.
+
+**Compatibility:** existing vaults, folders, notes, drafts, and organizer metadata remain compatible. No note-format migration is required.
+
+**Verification:** focused frontend and native tests, TypeScript, lint, dark/light visual checks, organizer drag checks, production build, and packaged installation verification passed before delivery.
+
 ## 1.0.3 — 2026-09-26 — Responsive startup
 
 - Render the shell before workspace initialization, load vaults and folders incrementally, and run scans and filesystem commands on native workers.

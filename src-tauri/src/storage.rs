@@ -399,9 +399,9 @@ impl Workspace {
         let count = item.original.split('/').count();
         if !matches!(
             (item.kind.as_str(), count),
-            ("vault", 1) | ("folder", 2) | ("note", 3)
+            ("vault", 1) | ("folder", 2) | ("note", 2 | 3)
         ) {
-            return Err("The original location does not match Vault → Folder → Note.".into());
+            return Err("The original location must be inside a vault.".into());
         }
         if !destination.parent().is_some_and(|p| p.is_dir()) {
             return Err("Restore or recreate the original vault and folder first.".into());
@@ -446,20 +446,6 @@ impl Workspace {
         let mut moves = Vec::new();
         for vault in &snapshot.entries {
             nested(vault, &mut moves);
-            let root_notes: Vec<_> = vault.children.iter().filter(|e| e.kind == "note").collect();
-            if !root_notes.is_empty() {
-                let base = format!("{}/Recovered notes", vault.path);
-                let mut folder = base.clone();
-                let mut i = 2;
-                while self.resolve(&folder)?.exists() {
-                    folder = format!("{base} {i}");
-                    i += 1;
-                }
-                fs::create_dir(self.resolve(&folder)?).map_err(err)?;
-                for note in root_notes {
-                    moves.push((note.path.clone(), format!("{folder}/{}", note.name)));
-                }
-            }
         }
         if moves.is_empty() {
             return Ok(());
@@ -591,10 +577,7 @@ mod tests {
             b"original\r\nbytes"
         );
         assert!(w.root.join("V/F - Sub - Deep").is_dir());
-        assert_eq!(
-            w.read("V/Recovered notes/root.md").unwrap().content,
-            "root note"
-        );
+        assert_eq!(w.read("V/root.md").unwrap().content, "root note");
         let before = serde_json::to_string(&w.snapshot().unwrap()).unwrap();
         w.migrate().unwrap();
         assert_eq!(

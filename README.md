@@ -23,7 +23,7 @@ git clone https://github.com/roma-buddha/lotus-notes.git lotus
 cd lotus
 npm ci
 npm run package:win
-Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.3_x64-setup.exe
+Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.4_x64-setup.exe
 ```
 
 For development rather than installation, run `npm run dev` after `npm ci`.
@@ -65,7 +65,7 @@ Lotus/                        # your chosen storage folder
   .lotus-state/               # locks, area metadata and migration records
 ```
 
-Exactly **Vault → Folder → Note**. The wider bottom-left vault picker has a settings icon for each vault and a plus beside Find a vault for **Create vault** / **Add existing vault…**. The sidebar’s top New folder button acts on the current vault. The searchable vault dropdown shows one vault’s folders and notes at a time without changing open tabs. Vault menus create folders; folder menus create notes. Notes cannot be created at vault root and folders cannot contain subfolders. Duplicate names are never overwritten. Move/rename does not rewrite links inside Markdown files.
+Notes live directly in a **Vault**, or in a folder inside that vault. The wider bottom-left vault picker has a settings icon for each vault and a plus beside Find a vault for **Create vault** / **Add existing vault…**. The sidebar’s top New folder button acts on the current vault. The searchable vault dropdown shows one vault’s folders and notes at a time without changing open tabs. Vault menus create folders or notes; folder menus create notes. The New note button and Ctrl+N use the selected folder or vault. Folders cannot contain subfolders. Drop `.md` or `.markdown` files from Explorer or the desktop onto a vault selector or the sidebar’s empty space to copy them into that vault; dropping onto a folder copies them there. The first imported note opens automatically, and duplicate filenames receive a numeric suffix. Duplicate names are never overwritten. Move/rename does not rewrite links inside Markdown files.
 
 Folder/note creation inserts an Untitled folder/Untitled row directly into the tree with its name selected. Creation and rename happen inline: **Enter** confirms, **Escape** cancels. The complete temporary row has a rounded accent outline and the same indentation and folder arrow as its neighboring rows. Vault settings opens beside the vault picker; its gear is at the right of each vault row and a pencil beside the name starts inline rename. Settings retains reveal and **Remove from sidebar**, which leaves files unchanged; restore hidden registrations through **Hidden vaults**.
 
@@ -166,7 +166,7 @@ Filesystem commands reject traversal, internal metadata paths, reserved names, l
 
 The source checkout and compatibility data may retain their historical names; the product and installed app are **Lotus**.
 
-The previous suite (`scripts/smoke-lotus-0110.mjs`) verifies dedicated sidebar navigation/search, organizer actions, hanging lists, callout padding, table caret, selection isolation, formatting/link scroll stability, cross-vault tabs, browser dispatch, external file edits/moves and conflict recovery. External same-filesystem renames are followed using Windows file identities; unsupported/ambiguous moves are not guessed. Deleted open content and conflicting local drafts are retained rather than silently discarded. The existing Vault → Folder → Note structure remains unchanged, and inbound Markdown links are not rewritten automatically.
+The previous suite (`scripts/smoke-lotus-0110.mjs`) verifies dedicated sidebar navigation/search, organizer actions, hanging lists, callout padding, table caret, selection isolation, formatting/link scroll stability, cross-vault tabs, browser dispatch, external file edits/moves and conflict recovery. External same-filesystem renames are followed using Windows file identities; unsupported/ambiguous moves are not guessed. Deleted open content and conflicting local drafts are retained rather than silently discarded. Inbound Markdown links are not rewritten automatically.
 
 ## Portable export / import (0.12)
 
