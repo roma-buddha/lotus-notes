@@ -2170,6 +2170,7 @@ export default function App() {
   };
   const commitInline = async () => {
     if (!inline || inlineBusy.current) return;
+    let created = false;
     inlineBusy.current = true;
     setWorking(true);
     setDialogError("");
@@ -2179,11 +2180,16 @@ export default function App() {
         return;
       }
       if (inline.kind === "create") {
+        setInline({ ...inline, pendingName: name.trim() });
         const path = await api.create(
           inline.parent,
           inline.entryKind,
           name.trim(),
         );
+        created = true;
+        // The write has succeeded. Retire the input before refreshing or opening
+        // the note; those reads can be slow and must not leave a duplicate name.
+        setInline(null);
         await refresh();
         setSelected(path);
         setVaultPath(path.split("/")[0]);
@@ -2204,13 +2210,12 @@ export default function App() {
           });
       }
       setInline(null);
-      requestAnimationFrame(() =>
-        document
-          .querySelector<HTMLElement>(".tree-row.selected .tree-select")
-          ?.focus(),
-      );
     } catch (e) {
-      setDialogError(String(e));
+      if (created) setError(`The item was created, but could not be opened or refreshed: ${String(e)}`);
+      else {
+        setInline(inline);
+        setDialogError(String(e));
+      }
     } finally {
       inlineBusy.current = false;
       setWorking(false);
@@ -2309,14 +2314,24 @@ export default function App() {
     );
   };
   const changeRoot = async () => {
-    if (!(await saveAll())) return;
+    if (!(await saveAll())) throw new Error("Save or recover your open drafts before changing the vaults folder.");
     if (!(await api.chooseRoot())) return;
     current.current.doc = null;
     current.current.draft = "";
     setDoc(null);
     setDraft("");
+    secondaryRef.current = { doc: null, draft: "" };
+    setSecondaryDoc(null);
+    setSecondaryDraft("");
+    setSecondaryBrowser(null);
+    setSplitView(null);
+    setActivePane("primary");
+    setError("");
+    setStatus("Saved");
     const next = await initializeWorkspace();
     setSnapshot(next);
+    setStartupError("");
+    setLoading(false);
     current.current.root = next.root;
     let hidden: string[] = [];
     try {
@@ -2340,6 +2355,8 @@ export default function App() {
     setHiddenPanel(null);
     setSelected(next.entries.find((e) => !hidden.includes(e.path))?.path ?? "");
     setCollapsed(new Set());
+    expandedFolders.current.clear();
+    setOrganizer(await api.organizer());
   };
   const recoverCopy = async () => {
     const state = current.current;
@@ -2548,13 +2565,14 @@ export default function App() {
     setActions({ entry, anchor });
   };
   useEffect(() => {
+    if (loading || !snapshot.root) return;
     void api
       .registerView(
         doc?.path ?? null,
         secondaryDoc?.path ? [secondaryDoc.path] : [],
       )
       .catch((e) => setError(String(e)));
-  }, [doc?.path, secondaryDoc?.path]);
+  }, [doc?.path, secondaryDoc?.path, loading, snapshot.root]);
 
   useEffect(() => {
     const width = (event: Event) => {

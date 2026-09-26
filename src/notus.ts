@@ -46,6 +46,7 @@ export type Document = {
   locked: boolean;
 };
 export type SearchResult = { path: string; snippet: string };
+export type StorageLocations = { app_data: string; browser_data: string; workspace_data: string; trash: string };
 export type TrashItem = {
   id: string;
   name: string;
@@ -116,11 +117,12 @@ export const api = {
     invoke<string>("relocate_entry", { path, parent, name }),
   remove: (path: string) => invoke<void>("delete_entry", { path }),
   reveal: (path: string) => invoke<void>("reveal_vault", { path }),
+  storageLocations: (reveal?: "app_data" | "browser_data" | "workspace_data" | "trash") =>
+    invoke<StorageLocations>("storage_locations", { reveal }),
   chooseRoot: async () => {
     const changed = await nativeInvoke<boolean>("choose_root");
     if (changed) {
       resetWorkspace();
-      await initializeWorkspace();
     }
     return changed;
   },

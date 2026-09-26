@@ -7,6 +7,7 @@ mod storage;
 mod transfer;
 mod windows;
 mod workspace;
+mod storage_config;
 use notify::{event::ModifyKind, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     fs,
@@ -662,7 +663,7 @@ async fn choose_root(app: tauri::AppHandle) -> Result<bool, String> {
         return Err("Close detached windows before changing the workspace.".into());
     }
     let Some(folder) = rfd::AsyncFileDialog::new()
-        .set_title("Choose your Lotus workspace folder")
+        .set_title("Open vaults folder — existing files stay in place")
         .pick_folder()
         .await
     else {
@@ -670,18 +671,10 @@ async fn choose_root(app: tauri::AppHandle) -> Result<bool, String> {
     };
     let folder = folder.path().to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
-        let next = Workspace::open(folder)?;
         let state = app.state::<Store>();
+        let next = storage_config::select_vaults(&folder, state.config.parent().ok_or("Invalid app-data location")?)?;
         let _activation = state.activation.write().map_err(|e| e.to_string())?;
-        if let Some(parent) = state.config.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        fs::write(
-            &state.config,
-            serde_json::to_string(next.home.as_ref().unwrap_or(&next.root))
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        storage_config::StorageConfig::from_workspace(&next).save(&state.config)?;
         *state.workspace.lock().map_err(|e| e.to_string())? = next;
         state.jobs.activate();
         state.watcher_started.store(false, Ordering::Release);
@@ -691,6 +684,40 @@ async fn choose_root(app: tauri::AppHandle) -> Result<bool, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+#[derive(serde::Serialize)]
+struct StorageLocations {
+    app_data: String,
+    browser_data: String,
+    workspace_data: String,
+    trash: String,
+}
+#[tauri::command]
+async fn storage_locations(app: tauri::AppHandle, reveal: Option<String>) -> Result<StorageLocations, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let workspace = state.handle(None)?;
+        let app_data = state.config.parent().ok_or("Invalid app-data location")?;
+        let browser_data = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(PathBuf::from)
+            .unwrap_or(app.path().app_local_data_dir().map_err(|e| e.to_string())?);
+        let workspace_data = workspace.internal_dir(".notus-state")?;
+        let trash = workspace.internal_dir(".notus-trash")?;
+        if let Some(reveal) = reveal {
+            let path = match reveal.as_str() {
+                "app_data" => app_data,
+                "browser_data" => &browser_data,
+                "workspace_data" => &workspace_data,
+                "trash" => &trash,
+                _ => return Err("Unknown storage location".into()),
+            };
+            fs::create_dir_all(path).map_err(|e| e.to_string())?;
+            std::process::Command::new("explorer.exe")
+                .arg(path.to_string_lossy().trim_start_matches("\\\\?\\"))
+                .spawn().map_err(|e| e.to_string())?;
+        }
+        let display = |path: &std::path::Path| path.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
+        Ok(StorageLocations { app_data: display(app_data), browser_data: display(&browser_data), workspace_data: display(&workspace_data), trash: display(&trash) })
+    }).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn import_vault(
@@ -1017,6 +1044,7 @@ fn main() {
             snapshot,
             startup_snapshot,
             startup::workspace_bootstrap,
+            storage_locations,
             startup::list_directory,
             startup::cancel_workspace_request,
             startup::retry_workspace_watcher,

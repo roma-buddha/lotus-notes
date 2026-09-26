@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Ellipsis } from "lucide-react";
 import { directoryStatus, loadDirectory } from "./workspaceClient";
 import { stem, type Entry } from "./notus";
 
-import { anchorAt, type Anchor, type InlineEdit } from "./sidebarTypes";
+import { anchorAt, isPendingCreation, type Anchor, type InlineEdit } from "./sidebarTypes";
 
 const INITIAL_NOTE_ROWS = 250;
 const NOTE_ROW_STEP = 250;
@@ -165,7 +165,7 @@ export function SidebarTree(props: Props) {
   return (
     <>
       {(() => {
-        const matching = entries.filter(matches);
+        const matching = entries.filter(matches).filter((entry) => !isPendingCreation(entry, inline));
         // Folders stay visible, while a very large note folder is progressively
         // rendered. This bounds DOM work even for vaults with thousands of files.
         const folders = matching.filter((entry) => entry.kind !== "note");

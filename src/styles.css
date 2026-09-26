@@ -1296,9 +1296,9 @@ dialog > .dialog-hint {
   font-size: 13px;
 }
 .tree-select:focus-visible {
-  outline: none;
-  box-shadow: inset 2px 0 var(--accent);
-  border-radius: 2px;
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+  box-shadow: none;
 }
 .kind-folder .tree-select {
   font-weight: 550;

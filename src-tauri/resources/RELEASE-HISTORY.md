@@ -2,6 +2,16 @@
 
 This is Lotus’s built-in, read-only release record. It opens from **Settings → About** and is stored with the application rather than in a vault. Every release entry records its date, user-facing behavior, compatibility or data-handling notes, and verification. Future releases must add a dated, detailed entry here before packaging.
 
+## 1.0.6 — 2026-09-26 — Clear storage locations and smooth note creation
+
+- Wait for workspace readiness before registering the initial note view, preventing the spurious startup announcement.
+- Retire the creation input as soon as a write succeeds; hide an early watcher row until then. Stop focusing the sidebar note after creation and replace its left-edge keyboard focus mark with an inset outline.
+- Show the Vaults folder, Lotus app data, workspace state, and Trash locations separately in Settings, with Explorer actions.
+- Open a vaults folder directly without moving its files. Recognize existing Lotus storage homes and their Vaults subfolders. New locations have separate state and Trash under local app data; the vaults folder may be inside the same Lotus parent or elsewhere.
+- Save the selected locations atomically, retain legacy configuration support, and clear both note panes after saving drafts when switching locations.
+
+**Compatibility:** existing vaults, metadata, Trash, browser preferences, and draft recovery records remain in place. No bulk migration or note-format changes. Release history stays bundled with the app. Opening another vaults folder does not move existing vaults.
+
 ## 1.0.5 — 2026-09-26 — Sidebar creation and file-drop routing
 
 - Replace the separate Files toolbar creation controls with one fixed plus button offering Create note and Create folder.

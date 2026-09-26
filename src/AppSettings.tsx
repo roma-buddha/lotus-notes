@@ -12,7 +12,12 @@ import {
 } from "lucide-react";
 import { exportSettings, importSettings } from "./portableSettings";
 import { AISettings } from "./AISettings";
-import { api, type BackupPreview, type TrashItem } from "./notus";
+import {
+  api,
+  type BackupPreview,
+  type TrashItem,
+  type StorageLocations,
+} from "./notus";
 import release from "../package.json";
 
 export function AppSettings({
@@ -38,7 +43,12 @@ export function AppSettings({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [tab, setTab] = useState<
-    "Appearance" | "Workspace" | "Trash" | "Export / Import" | "AI models" | "About"
+    | "Appearance"
+    | "Workspace"
+    | "Trash"
+    | "Export / Import"
+    | "AI models"
+    | "About"
   >(initialTab ?? "Appearance");
   const [vaults, setVaults] = useState(true);
   const [trash, setTrash] = useState(false);
@@ -48,6 +58,7 @@ export function AppSettings({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [locations, setLocations] = useState<StorageLocations | null>(null);
   const [confirm, setConfirm] = useState<TrashItem[] | null>(null);
   useLayoutEffect(() => {
     const trigger = document.activeElement as HTMLElement;
@@ -58,6 +69,22 @@ export function AppSettings({
       trigger?.focus({ preventScroll: true });
     };
   }, []);
+  useEffect(() => {
+    if (tab !== "Workspace") return;
+    let cancelled = false;
+    setLocations(null);
+    void api
+      .storageLocations()
+      .then((value) => {
+        if (!cancelled) setLocations(value);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, root]);
   useEffect(() => {
     if (tab === "Trash")
       void api
@@ -172,12 +199,20 @@ export function AppSettings({
           ) : tab === "About" ? (
             <section className="about-lotus">
               <h3>About Lotus</h3>
-              <p>Lotus is a local-first workspace for Markdown notes. Your notes remain in the folders you choose on this computer.</p>
+              <p>
+                Lotus is a local-first workspace for Markdown notes. Your notes
+                remain in the folders you choose on this computer.
+              </p>
               <h4>Project</h4>
               <p>Lotus is an educational project by VISTU LABS.</p>
               <h4>License</h4>
               <p>© 2026 VISTU LABS. Lotus is licensed under the MIT License.</p>
-              <p className="muted">You may use, copy, modify, publish, distribute, sublicense, and sell copies of Lotus, provided its copyright and MIT license notice are retained. It is provided without warranty. See the bundled LICENSE file for the complete terms.</p>
+              <p className="muted">
+                You may use, copy, modify, publish, distribute, sublicense, and
+                sell copies of Lotus, provided its copyright and MIT license
+                notice are retained. It is provided without warranty. See the
+                bundled LICENSE file for the complete terms.
+              </p>
               <h4>Release</h4>
               <p>Lotus {release.version}</p>
               <button
@@ -188,10 +223,21 @@ export function AppSettings({
                 View complete release history
               </button>
               <h4>Privacy</h4>
-              <p>Lotus does not run its own cloud for your notes or store their contents elsewhere. It reads and writes only the local vault you open.</p>
+              <p>
+                Lotus does not run its own cloud for your notes or store their
+                contents elsewhere. It reads and writes only the local vault you
+                open.
+              </p>
               <h4>AI models</h4>
-              <p>You can use a model running locally in Lotus or connect a model provider with your own API key. Lotus sends only the chat and note context you explicitly choose to the selected provider. Local models run on this computer.</p>
-              <p className="muted">Review AI suggestions before applying them to a note.</p>
+              <p>
+                You can use a model running locally in Lotus or connect a model
+                provider with your own API key. Lotus sends only the chat and
+                note context you explicitly choose to the selected provider.
+                Local models run on this computer.
+              </p>
+              <p className="muted">
+                Review AI suggestions before applying them to a note.
+              </p>
             </section>
           ) : tab === "Appearance" ? (
             <>
@@ -342,10 +388,10 @@ export function AppSettings({
             </>
           ) : tab === "Workspace" ? (
             <>
-              <h3>Workspace folder</h3>
+              <h3>Vaults folder</h3>
               <p>
-                Vaults and their contents live here. Internal state and Trash
-                are kept separately in the parent Lotus folder.
+                This folder contains your vaults and notes. It can be a Vaults
+                subfolder inside your Lotus folder, or a separate location.
               </p>
               <p className="settings-path">{root}</p>
               <div className="settings-buttons">
@@ -361,13 +407,71 @@ export function AppSettings({
                   Open in File Explorer
                 </button>
                 <button disabled={busy} onClick={() => void run(changeRoot)}>
-                  Change workspace…
+                  Open another vaults folder…
                 </button>
               </div>
               <p className="muted">
-                Notes live in vaults, optionally inside a folder. Imported nested folders are safely
-                flattened into uniquely named folders.
+                Select the folder containing your vaults. Opening another
+                location leaves your current files in place; it does not move or
+                reorganize them.
               </p>
+              <h3>Lotus app data</h3>
+              <p>
+                Lotus keeps its configuration here. Release history is included
+                with the app. Existing data stays in place when you change vaults.
+              </p>
+              {locations ? (
+                <>
+                  <p className="settings-path">{locations.app_data}</p>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await api.storageLocations("app_data");
+                      })
+                    }
+                  >
+                    <FolderOpen size={16} /> Open app data in File Explorer
+                  </button>
+                  <details>
+                    <summary>Local preferences, draft recovery, and cache</summary>
+                    <p className="muted">These stay in Lotus's existing Windows browser profile, independently of your vaults folder.</p>
+                    <p className="settings-path">{locations.browser_data}</p>
+                    <button disabled={busy} onClick={() => void run(async () => { await api.storageLocations("browser_data"); })}>
+                      <FolderOpen size={16} /> Open local data in File Explorer
+                    </button>
+                  </details>
+                  <h3>State and Trash for these vaults</h3>
+                  <p className="muted">
+                    Each vaults location keeps its own state and Trash. Existing
+                    Lotus folders retain their original locations.
+                  </p>
+                  <p className="settings-path">{locations.workspace_data}</p>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await api.storageLocations("workspace_data");
+                      })
+                    }
+                  >
+                    <FolderOpen size={16} /> Open state in File Explorer
+                  </button>
+                  <p className="settings-path">{locations.trash}</p>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await api.storageLocations("trash");
+                      })
+                    }
+                  >
+                    <FolderOpen size={16} /> Open Trash in File Explorer
+                  </button>
+                </>
+              ) : (
+                <p role="status">Loading storage locations…</p>
+              )}
             </>
           ) : (
             <>

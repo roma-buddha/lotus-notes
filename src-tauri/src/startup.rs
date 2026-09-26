@@ -111,17 +111,13 @@ pub async fn workspace_bootstrap(app: tauri::AppHandle) -> Result<Bootstrap, Str
         if !state.jobs.ready.load(Ordering::Acquire) {
             let configured = if std::env::var_os("NOTUS_ROOT").is_none() {
                 match std::fs::read_to_string(&state.config) {
-                    Ok(value) => Some(serde_json::from_str::<std::path::PathBuf>(&value).map_err(|_| "Workspace settings could not be read. Choose your workspace again.")?),
+                    Ok(value) => Some(serde_json::from_str::<crate::storage_config::StorageConfig>(&value).map_err(|_| "Workspace settings could not be read. Choose your vaults folder again.")?),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(format!("Workspace settings are unavailable: {error}")),
                 }
             } else { None };
-            if configured.as_ref().is_some_and(|root| !root.exists()) {
-                return Err("Your workspace folder is unavailable. Reconnect its drive or choose another workspace.".into());
-            }
             let root = std::env::var_os("NOTUS_ROOT")
                 .map(std::path::PathBuf::from)
-                .or(configured)
                 .unwrap_or_else(|| {
                     let documents = app
                         .path()
@@ -138,7 +134,9 @@ pub async fn workspace_bootstrap(app: tauri::AppHandle) -> Result<Bootstrap, Str
             {
                 return Err("Choose a folder for your Lotus workspace.".into());
             }
-            let next = if std::env::var_os("NOTUS_ROOT").is_some()
+            let next = if let Some(configured) = configured {
+                configured.open()
+            } else if std::env::var_os("NOTUS_ROOT").is_some()
                 && !root.join(".lotus-state/layout.json").exists()
             {
                 Workspace::new(root)

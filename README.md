@@ -23,7 +23,7 @@ git clone https://github.com/roma-buddha/lotus-notes.git lotus
 cd lotus
 npm ci
 npm run package:win
-Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.5_x64-setup.exe
+Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.6_x64-setup.exe
 ```
 
 For development rather than installation, run `npm run dev` after `npm ci`.
@@ -50,7 +50,9 @@ Tauri 2 / Rust for native windows and validated filesystem operations; React 19 
 
 ## Workspace
 
-New installations show workspace setup after the shell opens. Existing workspaces load vaults first and discover folder contents as needed, with background indexing and retry controls for delayed operations. Existing installations retain their chosen parent folder and organize vault directories under **Vaults**. Internal metadata and Trash become **.lotus-state** and **.lotus-trash**, alongside Vaults. Existing relative note identities are preserved and local bookmarks/appearance preferences migrate to the new root. Close detached windows before switching workspaces.
+New installations show workspace setup after the shell opens. Existing workspaces load vaults first and discover folder contents as needed, with background indexing and retry controls for delayed operations. **Settings → Workspace → Open another vaults folder** selects the folder containing vault directories, without moving or reorganizing its files. The vaults folder can be a subfolder of your Lotus folder or a separate location. Existing Lotus storage homes and their Vaults subfolders are both recognized. Close detached windows and save or recover open drafts before switching.
+
+New vaults locations keep separate metadata and Trash beneath the Windows app-data directory, keyed by their canonical path. Settings shows the actual locations of configuration, local browser preferences/draft recovery/cache, workspace state, and Trash, with Explorer actions. Configuration supports both legacy storage-home paths and separate vault/data paths and is replaced atomically. Existing legacy storage stays in place, as shown below; no bulk data migration is required. Browser settings and draft recovery records remain in the existing WebView profile. Release history is bundled with the application.
 
 ```text
 Lotus/                        # your chosen storage folder
