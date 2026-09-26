@@ -7,17 +7,29 @@ import {
   useRef,
   useState,
 } from "react";
-import { externalEditorUpdate } from "./externalEditorUpdate";
+import { externalEditorUpdate } from "./editorBridge";
+import {
+  initializeWorkspace,
+  resetWorkspace,
+  subscribeWorkspace,
+  directoryStatus,
+  loadDirectory,
+  refreshDirectories,
+  workspaceGeneration,
+  hasPendingDirectories,
+} from "./workspaceClient";
 import { externalMoves } from "./core/fileChanges";
 import { websiteUrl } from "./core/links";
 import type { EditorView } from "@codemirror/view";
-import { undo, undoDepth } from "@codemirror/commands";
+import { undo, undoDepth } from "./editorBridge";
 import { exportSettings, importSettings } from "./portableSettings";
 import { AreaIcon } from "./AreaIcons";
 import { NoteSearch } from "./NoteSearch";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, emitTo } from "@tauri-apps/api/event";
-import { AIChat } from "./AIChat";
+const AIChat = lazy(() =>
+  import("./AIChat").then((m) => ({ default: m.AIChat })),
+);
 import {
   editedBody,
   minimalChange,
@@ -88,23 +100,11 @@ const WorkspaceOrganizer = lazy(() =>
 const NoteEditor = lazy(() =>
   import("./NoteEditor").then((module) => ({ default: module.NoteEditor })),
 );
-import { editorItems } from "./EditorMenu";
-import { codeTarget, readTarget, type EditTarget } from "./editTarget";
+import { editorItems } from "./editorBridge";
+import { codeTarget, readTarget } from "./editorBridge";
+import type { EditTarget } from "./editTarget";
+import { FeatureBoundary } from "./FeatureBoundary";
 import { useBookmarks, moveBookmarks } from "./bookmarks";
-
-// React Strict Mode intentionally mounts effects twice in development. Keep the
-// native startup walk single-flight so diagnostic rendering cannot make a large
-// vault take two complete passes before it becomes usable.
-let startupSnapshotRequest: Promise<Snapshot> | undefined;
-function loadStartupSnapshot() {
-  if (!startupSnapshotRequest) {
-    startupSnapshotRequest = api.startupSnapshot().catch((error) => {
-      startupSnapshotRequest = undefined;
-      throw error;
-    });
-  }
-  return startupSnapshotRequest;
-}
 
 type DialogState = { kind: "delete"; entry: Entry };
 type ActionMenu = { entry: Entry; anchor: Anchor; settings?: boolean };
@@ -127,28 +127,6 @@ const browserTitle = (url: string) => {
     return "Browser";
   }
 };
-const workspaceSnapshotCache = "lotus-workspace-snapshot-v1";
-function cachedWorkspaceSnapshot(): Snapshot {
-  try {
-    const saved = storage.get(workspaceSnapshotCache);
-    if (!saved || saved.length > 4_000_000) return { root: "", entries: [] };
-    const value = JSON.parse(saved) as Partial<Snapshot>;
-    if (
-      typeof value.root !== "string" ||
-      !Array.isArray(value.entries) ||
-      !value.entries.every((entry) => entry && typeof entry === "object")
-    )
-      return { root: "", entries: [] };
-    return {
-      root: value.root,
-      entries: value.entries as Entry[],
-      legacy_root:
-        typeof value.legacy_root === "string" ? value.legacy_root : null,
-    };
-  } catch {
-    return { root: "", entries: [] };
-  }
-}
 function Icon({
   label,
   children,
@@ -216,8 +194,48 @@ function Modal({
   );
 }
 export default function App() {
-  const [snapshot, setSnapshot] = useState<Snapshot>(cachedWorkspaceSnapshot);
-  const [loading, setLoading] = useState(() => !cachedWorkspaceSnapshot().root);
+  useEffect(() => {
+    requestAnimationFrame(() => performance.mark("lotus-shell-ready"));
+  }, []);
+  const [aiMounted, setAiMounted] = useState(false);
+  const [snapshot, setSnapshot] = useState<Snapshot>({
+    root: "",
+    entries: [],
+    complete: false,
+  });
+  const [loading, setLoading] = useState(true);
+  const [startupError, setStartupError] = useState("");
+  const [startupAttempt, setStartupAttempt] = useState(0);
+  const [startupAge, setStartupAge] = useState(0);
+  const [directoryTick, setDirectoryTick] = useState(0);
+  const [watcherError, setWatcherError] = useState("");
+  useEffect(() => {
+    const start = Date.now();
+    const timer = window.setInterval(() => {
+      if (loading) setStartupAge(Date.now() - start);
+      if (hasPendingDirectories()) setDirectoryTick((value) => value + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [startupAttempt, loading]);
+  const snapshotReceiver = useRef<(value: Snapshot) => void>(() => {});
+  useEffect(
+    () => subscribeWorkspace((value) => snapshotReceiver.current(value)),
+    [],
+  );
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    void listen<string>("lotus-watcher-error", (event) =>
+      setWatcherError(event.payload),
+    ).then((off) => {
+      if (cancelled) off();
+      else dispose = off;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
   const [selected, setSelected] = useState("");
   const [doc, setDoc] = useState<Document | null>(null);
   const [draft, setDraft] = useState("");
@@ -330,6 +348,9 @@ export default function App() {
     };
   }, [settings]);
   const [aiOpen, setAiOpen] = useState(false);
+  useEffect(() => {
+    if (aiOpen) setAiMounted(true);
+  }, [aiOpen]);
   const [aiPane, setAiPane] = useState<"primary" | "secondary">("primary");
   const [aiSettings, setAiSettings] = useState(false);
   const [vaultPath, setVaultPath] = useState("");
@@ -414,6 +435,28 @@ export default function App() {
   const activeVault = visibleEntries.find((e) => e.path === vaultPath);
   const organizerActive =
     tabs.find((t) => t.id === activeTab)?.organizer === true;
+  useEffect(() => {
+    if (!snapshot.root || !vaultPath) return;
+    void loadDirectory(vaultPath).catch((e) => setError(String(e)));
+  }, [vaultPath, snapshot.root]);
+  useEffect(() => {
+    if (!snapshot.root) return;
+    for (const entry of flatten(snapshot.entries)) {
+      if (
+        entry.kind === "folder" &&
+        entry.path.startsWith(vaultPath + "/") &&
+        !collapsed.has(entry.path) &&
+        directoryStatus(entry.path).state === "unloaded"
+      )
+        void loadDirectory(entry.path).catch(() => {});
+    }
+  }, [snapshot.entries, snapshot.root, vaultPath, collapsed]);
+  const needsCompleteTree = organizerActive || !!linkDialog;
+  useEffect(() => {
+    if (snapshot.root && needsCompleteTree && !snapshot.complete)
+      void api.snapshot().catch((e) => setError(String(e)));
+  }, [needsCompleteTree, snapshot.root, snapshot.complete]);
+
   const releaseActive = tabs.find((t) => t.id === activeTab)?.release === true;
   const browserActive = tabs.find((t) => t.id === activeTab)?.browser;
   const primaryBrowser = Boolean(browserActive && splitView);
@@ -528,22 +571,67 @@ export default function App() {
       setError(
         "CONFLICT: Your recovered draft and the file on disk both changed. Save a recovery copy to keep both.",
       );
+    setCollapsed(
+      (previous) =>
+        new Set(
+          [...previous].filter((path) => !next.path.startsWith(path + "/")),
+        ),
+    );
     storage.set(`notus-last:${current.current.root}`, next.path);
   };
+  const knownFolders = useRef(new Set<string>());
+  const expandedFolders = useRef(new Set<string>());
+  const knownEntries = useRef(new Map<string, Entry>());
   const latestSnapshot = useRef(snapshot);
   latestSnapshot.current = snapshot;
-  useEffect(() => {
-    if (!snapshot.root) return;
-    try {
-      const value = JSON.stringify(snapshot);
-      if (value.length <= 4_000_000) storage.set(workspaceSnapshotCache, value);
-    } catch {
-      // The cache is a convenience only. A failed write must never block Lotus.
+  const acceptSnapshot = (next: Snapshot) => {
+    const openEntries: Entry[] = [current.current.doc, secondaryRef.current.doc]
+      .filter((note): note is Document => !!note?.identity)
+      .map((note) => ({
+        name: note.path.split("/").at(-1)!,
+        path: note.path,
+        kind: "note",
+        children: [],
+        identity: note.identity,
+      }));
+    if (latestSnapshot.current.root !== next.root) {
+      knownEntries.current.clear();
+      knownFolders.current.clear();
     }
-  }, [snapshot]);
-  const refresh = async () => {
-    const next = await api.snapshot();
-    const moves = externalMoves(latestSnapshot.current.entries, next.entries);
+    const moves = externalMoves(
+      [...knownEntries.current.values(), ...openEntries],
+      next.entries,
+    );
+    for (const [old, path] of moves) {
+      if (expandedFolders.current.delete(old))
+        expandedFolders.current.add(path);
+    }
+    const newFolders = flatten(next.entries).filter(
+      (entry) =>
+        entry.kind === "folder" && !knownFolders.current.has(entry.path),
+    );
+    if (newFolders.length) {
+      for (const entry of newFolders) knownFolders.current.add(entry.path);
+      setCollapsed(
+        (previous) =>
+          new Set([
+            ...previous,
+            ...newFolders
+              .filter(
+                (entry) =>
+                  !expandedFolders.current.has(entry.path) &&
+                  !(
+                    moves.get(current.current.doc?.path ?? "") ??
+                    current.current.doc?.path
+                  )?.startsWith(entry.path + "/"),
+              )
+              .map((entry) => entry.path),
+          ]),
+      );
+    }
+    if (next.complete) knownEntries.current.clear();
+    for (const entry of flatten(next.entries))
+      knownEntries.current.set(entry.path, { ...entry, children: [] });
     if (moves.size) {
       const remap = (path: string) => moves.get(path) ?? path;
       setTabs((previous) =>
@@ -586,9 +674,10 @@ export default function App() {
       }
     }
     latestSnapshot.current = next;
-    setSnapshot((previous) =>
-      JSON.stringify(previous) === JSON.stringify(next) ? previous : next,
-    );
+    setSnapshot(next);
+    return moves;
+  };
+  const reconcileOrganizer = async (moves: Map<string, string>) => {
     let organization = await api.organizer();
     if (moves.size) {
       const assignments = Object.fromEntries(
@@ -610,8 +699,20 @@ export default function App() {
         ? previous
         : organization,
     );
+  };
+  snapshotReceiver.current = (next) => {
+    if (!next.root) return;
+    const moves = acceptSnapshot(next);
+    if (moves.size)
+      void reconcileOrganizer(moves).catch((e) => setError(String(e)));
+  };
+  const refresh = async (complete = false) => {
+    const next = complete ? await api.snapshot() : await refreshDirectories();
+    const moves = acceptSnapshot(next);
+    await reconcileOrganizer(moves);
     return next;
   };
+
   const save = async (): Promise<boolean> => {
     if (pending.current) {
       if (!(await pending.current)) return false;
@@ -667,12 +768,14 @@ export default function App() {
   const pendingCurrentNote = useRef<string | null>(null);
   const openingCurrentNote = useRef(false);
   const openNote = async (path: string) => {
+    performance.mark("lotus-note-request");
     // A sidebar click is an intent to replace the current-note slot.  Keep the
     // newest one while saving or reading instead of silently dropping it.
     pendingCurrentNote.current = path;
     if (openingCurrentNote.current) return;
     openingCurrentNote.current = true;
     navigating.current = true;
+    const delayed = window.setTimeout(() => setNotice("Opening note…"), 3000);
     try {
       while (pendingCurrentNote.current) {
         const next = pendingCurrentNote.current;
@@ -680,6 +783,8 @@ export default function App() {
         await openCurrentNote(next);
       }
     } finally {
+      clearTimeout(delayed);
+      setNotice("");
       openingCurrentNote.current = false;
       navigating.current = false;
     }
@@ -938,7 +1043,9 @@ export default function App() {
       else if (part && part !== ".") normalized.push(part);
     }
     const candidates = [decoded, normalized.join("/")];
-    const notes = flatten(snapshot.entries).filter((e) => e.kind === "note");
+    const notes = flatten(
+      snapshot.complete ? snapshot.entries : (await api.snapshot()).entries,
+    ).filter((e) => e.kind === "note");
     const exact = notes.find((e) =>
       candidates.some((p) => e.path === p || e.path === p + ".md"),
     );
@@ -977,8 +1084,8 @@ export default function App() {
     // A detached note needs no file tree or organiser. Reading it directly keeps
     // the new window focused and avoids repeating the main workspace startup.
     if (detached && requestedNote) {
-      void api
-        .read(requestedNote)
+      void initializeWorkspace(false)
+        .then(() => api.read(requestedNote))
         .then((note) => {
           if (cancelled) return;
           current.current.root = "detached";
@@ -995,8 +1102,9 @@ export default function App() {
         cancelled = true;
       };
     }
-    let backgroundRefresh: number | undefined;
-    void loadStartupSnapshot()
+    setLoading(true);
+    setStartupError("");
+    void initializeWorkspace()
       .then(async (next) => {
         if (cancelled) return;
         if (next.legacy_root)
@@ -1019,6 +1127,18 @@ export default function App() {
         // Launch into a clean workspace. Vaults and the last note are not
         // restored until the user explicitly chooses a vault or note.
         setVaultPath("");
+        try {
+          const expanded = JSON.parse(
+            storage.get("lotus-expanded:" + next.root) ?? "[]",
+          );
+          expandedFolders.current = new Set(
+            Array.isArray(expanded)
+              ? expanded.filter((p): p is string => typeof p === "string")
+              : [],
+          );
+        } catch {
+          expandedFolders.current.clear();
+        }
         try {
           const saved = JSON.parse(
             storage.get(`notus-collapsed:${next.root}`) ?? "[]",
@@ -1044,36 +1164,28 @@ export default function App() {
         }
         setHiddenVaults(hidden);
         const last = new URLSearchParams(window.location.search).get("note");
-        const found = flatten(
-          next.entries.filter((e) => !hidden.includes(e.path)),
-        ).find((e) => e.path === last && e.kind === "note");
-        if (found) {
-          setVaultPath(found.path.split("/")[0]);
-          const note = await api.read(found.path);
+        if (last) {
+          const note = await api.read(last);
           if (!cancelled) {
             live.current.loadDocument(note);
             setSelected(note.path);
+            setVaultPath(last.split("/")[0]);
           }
         } else setSelected("");
-        // The first response omits expensive Windows file identities.  Render it
-        // now, then reconcile the complete identity-aware tree after the window
-        // has had a chance to paint.
-        backgroundRefresh = window.setTimeout(() => {
-          if (!cancelled) void live.current.refresh().catch(() => {});
-        }, 100);
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) {
+          setError(String(e));
+          setStartupError(String(e));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
-      if (backgroundRefresh !== undefined)
-        window.clearTimeout(backgroundRefresh);
     };
-  }, [detached]);
+  }, [detached, startupAttempt]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     storage.set("notus-theme", theme);
@@ -1087,6 +1199,13 @@ export default function App() {
     storage.set(
       `notus-collapsed:${snapshot.root}`,
       JSON.stringify([...collapsed]),
+    );
+    expandedFolders.current = new Set(
+      [...knownFolders.current].filter((path) => !collapsed.has(path)),
+    );
+    storage.set(
+      "lotus-expanded:" + snapshot.root,
+      JSON.stringify([...expandedFolders.current]),
     );
   }, [vaultPath, collapsed, snapshot.root, loading]);
   useEffect(() => {
@@ -1144,6 +1263,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     let refreshing = false;
+    const changedPaths = new Set<string>();
     let timer: number | undefined;
     const reconcileOpenNotes = () => {
       if (pending.current || navigating.current) return;
@@ -1169,7 +1289,9 @@ export default function App() {
             }
           })
           .catch(() => {
-            // A structural notification will refresh the tree and report deletion.
+            setError(
+              "This note could not be read from disk. Its open text is preserved; retry or save a recovery copy.",
+            );
           });
       }
       const second = secondaryRef.current.doc;
@@ -1200,7 +1322,8 @@ export default function App() {
           .catch(() => {});
       }
     };
-    const refreshFromFilesystem = () => {
+    const refreshFromFilesystem = (paths: string[] = []) => {
+      for (const path of paths) changedPaths.add(path);
       if (timer !== undefined) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         if (
@@ -1208,11 +1331,16 @@ export default function App() {
           navigating.current ||
           pending.current ||
           !current.current.root
-        )
+        ) {
+          if (changedPaths.size) refreshFromFilesystem();
           return;
+        }
         refreshing = true;
         void (async () => {
-          const snapshot = await live.current.refresh();
+          const paths = [...changedPaths];
+          changedPaths.clear();
+          const snapshot = await refreshDirectories(paths);
+          snapshotReceiver.current(snapshot);
           const present = new Set(flatten(snapshot.entries).map((e) => e.path));
           const before = current.current;
           const note = before.doc;
@@ -1248,7 +1376,7 @@ export default function App() {
               }
             }
           }
-          if (note && !present.has(note.path)) {
+          if (note && snapshot.complete && !present.has(note.path)) {
             setStatus("Save failed");
             setError(
               "This note was moved outside the workspace or deleted. Its open text is preserved; restore the file or save a recovery copy.",
@@ -1287,15 +1415,21 @@ export default function App() {
           .catch((e) => setError(String(e)))
           .finally(() => {
             refreshing = false;
+            if (changedPaths.size) refreshFromFilesystem();
           });
       }, 350);
     };
     let unlisten: (() => void) | undefined;
     void import("@tauri-apps/api/event").then(({ listen }) =>
-      listen<{ structural: boolean }>("lotus-workspace-changed", (event) => {
-        if (event.payload.structural) refreshFromFilesystem();
-        else reconcileOpenNotes();
-      }).then((dispose) => {
+      listen<{ structural: boolean; generation: number; paths: string[] }>(
+        "lotus-workspace-changed",
+        (event) => {
+          if (event.payload.generation !== workspaceGeneration()) return;
+          if (event.payload.structural) {
+            refreshFromFilesystem(event.payload.paths);
+          } else reconcileOpenNotes();
+        },
+      ).then((dispose) => {
         unlisten = dispose;
       }),
     );
@@ -1325,9 +1459,11 @@ export default function App() {
         // have already converted the event position to logical pixels.
         [position.x, position.y],
       ]) {
-        const row = [...document.querySelectorAll<HTMLElement>(
-          ".tree-row.kind-folder[data-path]",
-        )].find((element) => {
+        const row = [
+          ...document.querySelectorAll<HTMLElement>(
+            ".tree-row.kind-folder[data-path]",
+          ),
+        ].find((element) => {
           const bounds = element.getBoundingClientRect();
           return (
             x >= bounds.left &&
@@ -1995,10 +2131,9 @@ export default function App() {
     // A cross-folder move updates organizer metadata in Rust, so always use a
     // fresh snapshot/state before writing the final requested placement.
     const currentOrganizer = await api.organizer();
-    const currentFiles =
-      parentOf(source) === parent
-        ? files
-        : flatten((await api.snapshot()).entries);
+    // Reordering needs the complete destination listing, never provisional rows.
+    await loadDirectory(parent);
+    const currentFiles = flatten((await api.snapshot()).entries);
     const siblings = currentFiles
       .filter(
         (entry) => entry.kind === "note" && parentOf(entry.path) === parent,
@@ -2166,7 +2301,8 @@ export default function App() {
     current.current.draft = "";
     setDoc(null);
     setDraft("");
-    const next = await refresh();
+    const next = await initializeWorkspace();
+    setSnapshot(next);
     current.current.root = next.root;
     let hidden: string[] = [];
     try {
@@ -2749,15 +2885,18 @@ export default function App() {
               !actions?.settings && (
                 <div className="new-vault-inline">{inlineEditor}</div>
               )}
-            {!visibleEntries.length && !loading && !inline && (
-              <div className="sidebar-empty">
-                <p>No vaults yet.</p>
-                <button onClick={() => showCreate("vault")}>
-                  <Plus size={15} />
-                  Create your first vault
-                </button>
-              </div>
-            )}
+            {!visibleEntries.length &&
+              !loading &&
+              directoryStatus("").state === "loaded" &&
+              !inline && (
+                <div className="sidebar-empty">
+                  <p>No vaults yet.</p>
+                  <button onClick={() => showCreate("vault")}>
+                    <Plus size={15} />
+                    Create your first vault
+                  </button>
+                </div>
+              )}
           </nav>
           <footer className="sidebar-footer">
             <VaultSwitcher
@@ -2806,22 +2945,78 @@ export default function App() {
             </Icon>
           </div>
         )}
-        <main id="editor-workspace" tabIndex={-1}>
-          {loading ? (
-            <div
-              className="empty-note lotus-loading"
-              role="status"
-              aria-live="polite"
+        {watcherError && (
+          <div role="alert" className="error-banner">
+            File watching stopped: {watcherError}{" "}
+            <button
+              onClick={() => {
+                setWatcherError("");
+                void api.retryWatcher();
+              }}
             >
-              <span className="lotus-loading-mark" aria-hidden="true">
-                ✦
-              </span>
+              Retry watching
+            </button>
+          </div>
+        )}
+        {snapshot.root &&
+          (() => {
+            const path = vaultPath || "";
+            const state = directoryStatus(path);
+            const age = state.started ? Date.now() - state.started : 0;
+            void directoryTick;
+            return state.state === "failed" ||
+              (state.state === "loading" && age >= 3000) ? (
+              <div role="status" className="error-banner">
+                {state.error || "Updating files…"}
+                {(state.state === "failed" || age >= 10000) && (
+                  <button
+                    onClick={() =>
+                      void loadDirectory(path, false, true).catch(() => {})
+                    }
+                  >
+                    Retry
+                  </button>
+                )}
+              </div>
+            ) : null;
+          })()}
+        <main id="editor-workspace" tabIndex={-1}>
+          {loading || (!snapshot.root && !detached) ? (
+            <div className="empty-note" role="status">
               <p>
-                Loading
-                <span className="lotus-loading-dots" aria-hidden="true">
-                  …
-                </span>
+                {startupError ||
+                  (startupAge >= 3000
+                    ? "Opening your workspace is taking longer than usual…"
+                    : "Opening workspace…")}
               </p>
+              {(startupError || startupAge >= 10000) && (
+                <div>
+                  <button
+                    onClick={() => {
+                      resetWorkspace();
+                      setStartupAttempt((value) => value + 1);
+                    }}
+                  >
+                    Retry
+                  </button>
+                  <button onClick={() => run(changeRoot)}>
+                    Choose workspace
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : organizerActive && !snapshot.complete ? (
+            <div className="empty-note" role="status">
+              Loading workspace details…{" "}
+              <button
+                onClick={() =>
+                  run(async () => {
+                    await api.snapshot(true);
+                  })
+                }
+              >
+                Retry
+              </button>
             </div>
           ) : organizerActive ? (
             <Suspense
@@ -2877,7 +3072,9 @@ export default function App() {
               <BrowserPane
                 browser={browserActive}
                 onError={setError}
-                onClose={() => run(() => closeBrowserPane(browserActive.id, "primary"))}
+                onClose={() =>
+                  run(() => closeBrowserPane(browserActive.id, "primary"))
+                }
                 onAddress={(url) =>
                   setTabs((previous) =>
                     previous.map((tab) =>
@@ -2923,7 +3120,9 @@ export default function App() {
                         browser={browserActive!}
                         onError={setError}
                         onClose={() =>
-                          run(() => closeBrowserPane(browserActive!.id, "primary"))
+                          run(() =>
+                            closeBrowserPane(browserActive!.id, "primary"),
+                          )
                         }
                         onAddress={(url) =>
                           setTabs((previous) =>
@@ -2944,175 +3143,189 @@ export default function App() {
                       />
                     ) : (
                       <>
-                    <NoteHeader
-                      note={doc}
-                      status={status}
-                      bookmarked={bookmarks.includes(doc.path)}
-                      bookmark={() => toggleBookmark(doc.path)}
-                      lock={() => run(() => toggleLock("primary"))}
-                      appearance={(anchor) => {
-                        setTextPane("primary");
-                        setTextPanel(anchor);
-                      }}
-                      undo={() => {
-                        if (editorView.current) undo(editorView.current);
-                      }}
-                      canUndo={
-                        !!editorView.current &&
-                        undoDepth(editorView.current.state) > 0
-                      }
-                      drop={(path) => run(() => openCurrentNote(path))}
-                      dropTarget="primary-pane"
-                      rename={(name) => renameNote(doc.path, name)}
-                      ai={() => {
-                        setAiPane("primary");
-                        preserveNotePosition(
-                          [editorView.current, secondaryEditor.current],
-                          () => setAiOpen(true),
-                        );
-                      }}
-                      close={
-                        splitView ? () => run(closePrimaryPane) : undefined
-                      }
-                    />
-                    <div
-                      className="document-scroll primary-pane"
-                      onFocusCapture={() => setActivePane("primary")}
-                      onPointerDown={() => setActivePane("primary")}
-                      onDragOver={(e) => {
-                        if (e.dataTransfer.types.includes("notus-note"))
-                          e.preventDefault();
-                      }}
-                      onDrop={(e) => {
-                        const path = e.dataTransfer.getData("text/notus-path");
-                        if (path) {
-                          e.preventDefault();
-                          run(() => openExtraTab(path));
-                        }
-                      }}
-                      onContextMenu={(e) => {
-                        if (
-                          (e.target as HTMLElement).closest(".diagram-widget")
-                        )
-                          return;
-                        if (doc.locked) {
-                          e.preventDefault();
-                          menuPane.current = "primary";
-                          menuTarget.current = readTarget(e.currentTarget);
-                          setTableMenu({
-                            anchor: {
-                              ...anchorAt(e.currentTarget),
-                              x: e.clientX,
-                              y: e.clientY,
-                            },
-                            position: 0,
-                            path: doc.path,
-                          });
-                          return;
-                        }
-                        if (
-                          !editorView.current ||
-                          !(e.target as HTMLElement).closest(".cm-editor")
-                        )
-                          return;
-                        e.preventDefault();
-                        const view = editorView.current;
-                        menuPane.current = "primary";
-                        const pos =
-                          view.posAtCoords({ x: e.clientX, y: e.clientY }) ??
-                          view.state.selection.main.head;
-                        const selection = view.state.selection.main;
-                        if (pos < selection.from || pos > selection.to)
-                          view.dispatch({ selection: { anchor: pos } });
-                        menuTarget.current = codeTarget(view);
-                        setTableMenu({
-                          anchor: {
-                            ...anchorAt(e.currentTarget),
-                            x: e.clientX,
-                            y: e.clientY,
-                          },
-                          position: view.state.doc.lineAt(pos).to,
-                          path: doc.path,
-                        });
-                      }}
-                      style={
-                        {
-                          "--note-font-size": `${fontSize}px`,
-                          "--note-font-weight": fontWeight,
-                          "--note-text-align": appearance.alignment,
-                          "--note-content-width":
-                            appearance.textWidth === "wide"
-                              ? "1147.5px"
-                              : "850px",
-                          "--note-font-family": `"${fontFamily}", sans-serif`,
-                        } as React.CSSProperties
-                      }
-                    >
-                      <PropertiesPanel
-                        key={`properties:${doc.path}`}
-                        content={draft}
-                        locked={doc.locked}
-                        onChange={edit}
-                      />
-                      {!doc.locked ? (
-                        <Suspense
-                          fallback={
-                            <div className="reading-loading" aria-live="polite">
-                              Preparing editor…
-                            </div>
+                        <NoteHeader
+                          note={doc}
+                          status={status}
+                          bookmarked={bookmarks.includes(doc.path)}
+                          bookmark={() => toggleBookmark(doc.path)}
+                          lock={() => run(() => toggleLock("primary"))}
+                          appearance={(anchor) => {
+                            setTextPane("primary");
+                            setTextPanel(anchor);
+                          }}
+                          undo={() => {
+                            if (editorView.current) undo(editorView.current);
+                          }}
+                          canUndo={
+                            !!editorView.current &&
+                            undoDepth(editorView.current.state) > 0
+                          }
+                          drop={(path) => run(() => openCurrentNote(path))}
+                          dropTarget="primary-pane"
+                          rename={(name) => renameNote(doc.path, name)}
+                          ai={() => {
+                            setAiPane("primary");
+                            preserveNotePosition(
+                              [editorView.current, secondaryEditor.current],
+                              () => setAiOpen(true),
+                            );
+                          }}
+                          close={
+                            splitView ? () => run(closePrimaryPane) : undefined
+                          }
+                        />
+                        <div
+                          className="document-scroll primary-pane"
+                          onFocusCapture={() => setActivePane("primary")}
+                          onPointerDown={() => setActivePane("primary")}
+                          onDragOver={(e) => {
+                            if (e.dataTransfer.types.includes("notus-note"))
+                              e.preventDefault();
+                          }}
+                          onDrop={(e) => {
+                            const path =
+                              e.dataTransfer.getData("text/notus-path");
+                            if (path) {
+                              e.preventDefault();
+                              run(() => openExtraTab(path));
+                            }
+                          }}
+                          onContextMenu={(e) => {
+                            if (
+                              (e.target as HTMLElement).closest(
+                                ".diagram-widget",
+                              )
+                            )
+                              return;
+                            if (doc.locked) {
+                              e.preventDefault();
+                              menuPane.current = "primary";
+                              menuTarget.current = readTarget(e.currentTarget);
+                              setTableMenu({
+                                anchor: {
+                                  ...anchorAt(e.currentTarget),
+                                  x: e.clientX,
+                                  y: e.clientY,
+                                },
+                                position: 0,
+                                path: doc.path,
+                              });
+                              return;
+                            }
+                            if (
+                              !editorView.current ||
+                              !(e.target as HTMLElement).closest(".cm-editor")
+                            )
+                              return;
+                            e.preventDefault();
+                            const view = editorView.current;
+                            menuPane.current = "primary";
+                            const pos =
+                              view.posAtCoords({
+                                x: e.clientX,
+                                y: e.clientY,
+                              }) ?? view.state.selection.main.head;
+                            const selection = view.state.selection.main;
+                            if (pos < selection.from || pos > selection.to)
+                              view.dispatch({ selection: { anchor: pos } });
+                            menuTarget.current = codeTarget(view);
+                            setTableMenu({
+                              anchor: {
+                                ...anchorAt(e.currentTarget),
+                                x: e.clientX,
+                                y: e.clientY,
+                              },
+                              position: view.state.doc.lineAt(pos).to,
+                              path: doc.path,
+                            });
+                          }}
+                          style={
+                            {
+                              "--note-font-size": `${fontSize}px`,
+                              "--note-font-weight": fontWeight,
+                              "--note-text-align": appearance.alignment,
+                              "--note-content-width":
+                                appearance.textWidth === "wide"
+                                  ? "1147.5px"
+                                  : "850px",
+                              "--note-font-family": `"${fontFamily}", sans-serif`,
+                            } as React.CSSProperties
                           }
                         >
-                          <NoteEditor
-                            path={doc.path}
-                            value={splitFrontmatter(draft).body}
-                            theme={theme}
-                            identity={`${snapshot.root}:${doc.path}`}
-                            appearance={appearance as NoteEditorAppearance}
-                            onCreateEditor={(view) => {
-                              editorView.current = view;
-                              const saved = viewPositions.current.get(doc.path);
-                              if (saved)
-                                view.dispatch({
-                                  selection: {
-                                    anchor: Math.min(
-                                      saved.anchor,
-                                      view.state.doc.length,
-                                    ),
-                                    head: Math.min(
-                                      saved.head,
-                                      view.state.doc.length,
-                                    ),
-                                  },
-                                });
-                            }}
-                            onChange={(body) => {
-                              const parsed = splitFrontmatter(draft);
-                              edit(
-                                draft.slice(
-                                  0,
-                                  draft.length - parsed.body.length,
-                                ) + body,
-                              );
-                            }}
+                          <PropertiesPanel
+                            key={`properties:${doc.path}`}
+                            content={draft}
+                            locked={doc.locked}
+                            onChange={edit}
                           />
-                        </Suspense>
-                      ) : (
-                        <Suspense
-                          fallback={
-                            <div className="reading-loading" aria-live="polite">
-                              Preparing preview…
-                            </div>
-                          }
-                        >
-                          <MarkdownView
-                            content={splitFrontmatter(draft).body}
-                            identity={`${snapshot.root}:${doc?.path}`}
-                            appearance={appearance}
-                            openLink={(href) => run(() => openLink(href))}
-                          />
-                        </Suspense>
-                      )}
-                    </div>
+                          {!doc.locked ? (
+                            <Suspense
+                              fallback={
+                                <div
+                                  className="reading-loading"
+                                  aria-live="polite"
+                                >
+                                  Preparing editor…
+                                </div>
+                              }
+                            >
+                              <NoteEditor
+                                path={doc.path}
+                                value={splitFrontmatter(draft).body}
+                                theme={theme}
+                                identity={`${snapshot.root}:${doc.path}`}
+                                appearance={appearance as NoteEditorAppearance}
+                                onCreateEditor={(view) => {
+                                  performance.mark("lotus-note-editable");
+                                  editorView.current = view;
+                                  const saved = viewPositions.current.get(
+                                    doc.path,
+                                  );
+                                  if (saved)
+                                    view.dispatch({
+                                      selection: {
+                                        anchor: Math.min(
+                                          saved.anchor,
+                                          view.state.doc.length,
+                                        ),
+                                        head: Math.min(
+                                          saved.head,
+                                          view.state.doc.length,
+                                        ),
+                                      },
+                                    });
+                                }}
+                                onChange={(body) => {
+                                  const parsed = splitFrontmatter(draft);
+                                  edit(
+                                    draft.slice(
+                                      0,
+                                      draft.length - parsed.body.length,
+                                    ) + body,
+                                  );
+                                }}
+                              />
+                            </Suspense>
+                          ) : (
+                            <Suspense
+                              fallback={
+                                <div
+                                  className="reading-loading"
+                                  aria-live="polite"
+                                >
+                                  Preparing preview…
+                                </div>
+                              }
+                            >
+                              <MarkdownView
+                                content={splitFrontmatter(draft).body}
+                                identity={`${snapshot.root}:${doc?.path}`}
+                                appearance={appearance}
+                                openLink={(href) => run(() => openLink(href))}
+                              />
+                            </Suspense>
+                          )}
+                        </div>
                       </>
                     )}
                   </section>
@@ -3217,7 +3430,10 @@ export default function App() {
                             onError={setError}
                             onClose={() =>
                               run(() =>
-                                closeBrowserPane(secondaryBrowser.id, "secondary"),
+                                closeBrowserPane(
+                                  secondaryBrowser.id,
+                                  "secondary",
+                                ),
                               )
                             }
                             onAddress={(url) => {
@@ -3367,6 +3583,7 @@ export default function App() {
                                         secondaryAppearance as NoteEditorAppearance
                                       }
                                       onCreateEditor={(view) => {
+                                        performance.mark("lotus-note-editable");
                                         secondaryEditor.current = view;
                                       }}
                                       onChange={(body) => {
@@ -3416,96 +3633,106 @@ export default function App() {
                     </>
                   )}
                 </div>
-                <AIChat
-                  open={aiOpen}
-                  close={() => {
-                    preserveNotePosition(
-                      [editorView.current, secondaryEditor.current],
-                      () => setAiOpen(false),
-                    );
-                  }}
-                  settings={() => {
-                    setAiSettings(true);
-                    setSettings(true);
-                  }}
-                  noteName={
-                    (aiPane === "primary" ? doc?.path : secondaryDoc?.path) ??
-                    "No note"
-                  }
-                  capture={() => {
-                    const state =
-                      aiPane === "primary"
-                        ? current.current
-                        : secondaryRef.current;
-                    if (!state.doc) return null;
-                    const value =
-                      state.doc.path === current.current.doc?.path
-                        ? current.current.draft
-                        : state.draft;
-                    const body = splitFrontmatter(value).body;
-                    const view =
-                      aiPane === "primary"
-                        ? editorView.current
-                        : secondaryEditor.current;
-                    const selection = view?.state.selection.main;
-                    return {
-                      root: latestSnapshot.current.root,
-                      path: state.doc.path,
-                      original: value,
-                      body,
-                      from: selection?.from ?? 0,
-                      to: selection?.to ?? 0,
-                      locked: state.doc.locked,
-                      pane: aiPane,
-                    };
-                  }}
-                  apply={async (note: NoteContext, replacement: string) => {
-                    const valid = () => {
-                      const state =
-                        note.pane === "primary"
-                          ? current.current
-                          : secondaryRef.current;
-                      const value =
-                        state.doc?.path === current.current.doc?.path
-                          ? current.current.draft
-                          : state.draft;
-                      if (
-                        latestSnapshot.current.root !== note.root ||
-                        state.doc?.path !== note.path ||
-                        value !== note.original ||
-                        state.doc.locked
-                      )
-                        throw new Error(
-                          "This note changed, was locked, or is no longer open. Request a fresh edit; nothing was replaced.",
-                        );
-                      return state.doc;
-                    };
-                    valid();
-                    const disk = await api.read(note.path);
-                    const liveDoc = valid();
-                    if (disk.locked || disk.revision !== liveDoc.revision)
-                      throw new Error(
-                        "The file changed on disk. Refresh it before requesting another edit.",
-                      );
-                    const view =
-                      note.pane === "primary"
-                        ? editorView.current
-                        : secondaryEditor.current;
-                    if (!view || view.state.doc.toString() !== note.body)
-                      throw new Error(
-                        "The editor changed. Request a fresh edit.",
-                      );
-                    const change = minimalChange(
-                      note.body,
-                      editedBody(note, replacement),
-                    );
-                    codeTarget(view).replace(
-                      change.from,
-                      change.to,
-                      change.insert,
-                    );
-                  }}
-                />
+                {aiMounted && (
+                  <FeatureBoundary>
+                    <Suspense fallback={<p role="status">Opening chat…</p>}>
+                      <AIChat
+                        open={aiOpen}
+                        close={() => {
+                          preserveNotePosition(
+                            [editorView.current, secondaryEditor.current],
+                            () => setAiOpen(false),
+                          );
+                        }}
+                        settings={() => {
+                          setAiSettings(true);
+                          setSettings(true);
+                        }}
+                        noteName={
+                          (aiPane === "primary"
+                            ? doc?.path
+                            : secondaryDoc?.path) ?? "No note"
+                        }
+                        capture={() => {
+                          const state =
+                            aiPane === "primary"
+                              ? current.current
+                              : secondaryRef.current;
+                          if (!state.doc) return null;
+                          const value =
+                            state.doc.path === current.current.doc?.path
+                              ? current.current.draft
+                              : state.draft;
+                          const body = splitFrontmatter(value).body;
+                          const view =
+                            aiPane === "primary"
+                              ? editorView.current
+                              : secondaryEditor.current;
+                          const selection = view?.state.selection.main;
+                          return {
+                            root: latestSnapshot.current.root,
+                            path: state.doc.path,
+                            original: value,
+                            body,
+                            from: selection?.from ?? 0,
+                            to: selection?.to ?? 0,
+                            locked: state.doc.locked,
+                            pane: aiPane,
+                          };
+                        }}
+                        apply={async (
+                          note: NoteContext,
+                          replacement: string,
+                        ) => {
+                          const valid = () => {
+                            const state =
+                              note.pane === "primary"
+                                ? current.current
+                                : secondaryRef.current;
+                            const value =
+                              state.doc?.path === current.current.doc?.path
+                                ? current.current.draft
+                                : state.draft;
+                            if (
+                              latestSnapshot.current.root !== note.root ||
+                              state.doc?.path !== note.path ||
+                              value !== note.original ||
+                              state.doc.locked
+                            )
+                              throw new Error(
+                                "This note changed, was locked, or is no longer open. Request a fresh edit; nothing was replaced.",
+                              );
+                            return state.doc;
+                          };
+                          valid();
+                          const disk = await api.read(note.path);
+                          const liveDoc = valid();
+                          if (disk.locked || disk.revision !== liveDoc.revision)
+                            throw new Error(
+                              "The file changed on disk. Refresh it before requesting another edit.",
+                            );
+                          const view =
+                            note.pane === "primary"
+                              ? editorView.current
+                              : secondaryEditor.current;
+                          if (!view || view.state.doc.toString() !== note.body)
+                            throw new Error(
+                              "The editor changed. Request a fresh edit.",
+                            );
+                          const change = minimalChange(
+                            note.body,
+                            editedBody(note, replacement),
+                          );
+                          codeTarget(view).replace(
+                            change.from,
+                            change.to,
+                            change.insert,
+                          );
+                        }}
+                      />
+                    </Suspense>
+                  </FeatureBoundary>
+                )}
               </div>
               <footer className="note-footer">
                 <span>
@@ -3673,6 +3900,9 @@ export default function App() {
                 }
               />
             </label>
+            {!snapshot.complete && (
+              <p role="status">Loading note suggestions…</p>
+            )}
             <div className="link-note-options">
               {files
                 .filter(

@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Ellipsis } from "lucide-react";
+import { directoryStatus, loadDirectory } from "./workspaceClient";
 import { stem, type Entry } from "./notus";
 
 import { anchorAt, type Anchor, type InlineEdit } from "./sidebarTypes";
@@ -37,9 +38,11 @@ const paneAt = (clientX: number, clientY: number) => {
   // testing. Pane geometry remains available, so pointer drags can still
   // replace it with a note just like they replace an ordinary note pane.
   for (const target of ["primary-pane", "secondary-pane"] as const) {
-    const pane = [...document.querySelectorAll<HTMLElement>(
-      `[data-lotus-drop="${target}"]`,
-    )].find((element) => {
+    const pane = [
+      ...document.querySelectorAll<HTMLElement>(
+        `[data-lotus-drop="${target}"]`,
+      ),
+    ].find((element) => {
       const rect = element.getBoundingClientRect();
       return (
         clientX >= rect.left &&
@@ -244,9 +247,7 @@ export function SidebarTree(props: Props) {
                     );
                   if (pane) {
                     document
-                      .querySelector<HTMLElement>(
-                        `[data-lotus-drop="${pane}"]`,
-                      )
+                      .querySelector<HTMLElement>(`[data-lotus-drop="${pane}"]`)
                       ?.classList.add("pointer-drop-target");
                     return;
                   }
@@ -517,6 +518,33 @@ export function SidebarTree(props: Props) {
                   </>
                 )}
               </div>
+              {folder &&
+                open &&
+                directoryStatus(entry.path).state !== "loaded" && (
+                  <div
+                    className="muted"
+                    role="status"
+                    style={{ paddingLeft: (depth + 1) * 12 + 20 }}
+                  >
+                    {directoryStatus(entry.path).state === "failed"
+                      ? "Could not load folder."
+                      : "Loading folder…"}
+                    {(directoryStatus(entry.path).state === "failed" ||
+                      Date.now() -
+                        (directoryStatus(entry.path).started ?? Date.now()) >=
+                        10000) && (
+                      <button
+                        onClick={() =>
+                          void loadDirectory(entry.path, false, true).catch(
+                            () => {},
+                          )
+                        }
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
               {folder && open && (
                 <SidebarTree
                   {...props}

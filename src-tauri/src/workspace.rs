@@ -27,6 +27,7 @@ pub struct Snapshot {
 }
 #[derive(Serialize, Debug, Clone)]
 pub struct Document {
+    pub identity: Option<String>,
     pub path: String,
     pub content: String,
     pub revision: String,
@@ -41,6 +42,7 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+#[derive(Clone)]
 pub struct Workspace {
     pub root: PathBuf,
     pub home: Option<PathBuf>,
@@ -152,9 +154,12 @@ impl Workspace {
         relative: &str,
         orders: &std::collections::BTreeMap<String, Vec<String>>,
         include_identities: bool,
+        levels: usize,
+        check: &dyn Fn() -> Result<()>,
     ) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
         for child in fs::read_dir(self.resolve(relative)?).map_err(err)? {
+            check()?;
             let child = child.map_err(err)?;
             let name = child.file_name().to_string_lossy().to_string();
             if name.starts_with('.') || name.ends_with(".lattice-tmp") {
@@ -186,7 +191,11 @@ impl Workspace {
                         "folder"
                     }
                     .into(),
-                    children: self.walk(&path, orders, include_identities)?,
+                    children: if levels > 1 {
+                        self.walk(&path, orders, include_identities, levels - 1, check)?
+                    } else {
+                        vec![]
+                    },
                 });
             } else if !relative.is_empty() && is_note(&child.path()) {
                 entries.push(Entry {
@@ -228,7 +237,7 @@ impl Workspace {
                 .to_string_lossy()
                 .trim_start_matches("\\\\?\\")
                 .into(),
-            entries: self.walk("", &organizer.orders, true)?,
+            entries: self.walk("", &organizer.orders, true, usize::MAX, &|| Ok(()))?,
             legacy_root: self.home.as_ref().map(|p| {
                 p.to_string_lossy()
                     .trim_start_matches("\\\\?\\")
@@ -236,12 +245,7 @@ impl Workspace {
             }),
         })
     }
-    /// A first-paint snapshot intentionally omits Windows file identities.
-    ///
-    /// Identity handles are needed to recognise external rename operations, but
-    /// opening every file just to obtain them delays startup dramatically in a
-    /// large vault.  The UI follows this with a normal snapshot in the
-    /// background, before filesystem-change reconciliation is needed.
+    /// Startup lists vaults only; descendants and identities are loaded independently.
     pub fn startup_snapshot(&self) -> Result<Snapshot> {
         let organizer = self.organizer()?;
         Ok(Snapshot {
@@ -250,13 +254,29 @@ impl Workspace {
                 .to_string_lossy()
                 .trim_start_matches("\\\\?\\")
                 .into(),
-            entries: self.walk("", &organizer.orders, false)?,
+            entries: self.walk("", &organizer.orders, false, 1, &|| Ok(()))?,
             legacy_root: self.home.as_ref().map(|p| {
                 p.to_string_lossy()
                     .trim_start_matches("\\\\?\\")
                     .to_string()
             }),
         })
+    }
+    pub fn directory(
+        &self,
+        path: &str,
+        identities: bool,
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Vec<Entry>> {
+        check()?;
+        let organizer = self.organizer()?;
+        self.walk(path, &organizer.orders, identities, 1, check)
+    }
+    pub fn scan(&self, check: &dyn Fn() -> Result<()>) -> Result<Snapshot> {
+        let mut result = self.startup_snapshot()?;
+        let organizer = self.organizer()?;
+        result.entries = self.walk("", &organizer.orders, true, usize::MAX, check)?;
+        Ok(result)
     }
     fn search_walk(
         &self,
@@ -265,8 +285,10 @@ impl Workspace {
         names: &mut Vec<SearchResult>,
         contents: &mut Vec<SearchResult>,
         limit: usize,
+        check: &dyn Fn() -> Result<()>,
     ) -> Result<()> {
         for child in fs::read_dir(self.resolve(relative)?).map_err(err)? {
+            check()?;
             let child = child.map_err(err)?;
             let name = child.file_name().to_string_lossy().to_string();
             if name.starts_with('.') || name.ends_with(".lattice-tmp") {
@@ -285,7 +307,7 @@ impl Workspace {
                 continue;
             }
             if kind.is_dir() {
-                self.search_walk(&path, query, names, contents, limit)?;
+                self.search_walk(&path, query, names, contents, limit, check)?;
                 continue;
             }
             if relative.is_empty()
@@ -331,14 +353,30 @@ impl Workspace {
     }
     /// Search is intentionally native and batched: the old webview loop made a
     /// separate IPC read for every note on every keystroke.
+    #[cfg(test)]
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        self.search_checked(query, limit, &|| Ok(()))
+    }
+    pub fn search_checked(
+        &self,
+        query: &str,
+        limit: usize,
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Vec<SearchResult>> {
         let query = query.trim().to_lowercase();
         if query.is_empty() {
             return Ok(vec![]);
         }
         let mut names = Vec::new();
         let mut contents = Vec::new();
-        self.search_walk("", &query, &mut names, &mut contents, limit.clamp(1, 100))?;
+        self.search_walk(
+            "",
+            &query,
+            &mut names,
+            &mut contents,
+            limit.clamp(1, 100),
+            check,
+        )?;
         names.extend(contents);
         Ok(names)
     }
@@ -347,8 +385,9 @@ impl Workspace {
         if !is_note(&path) || depth(relative) != 3 {
             return Err("Open a Markdown note inside a folder in a vault.".into());
         }
-        let content = fs::read_to_string(path).map_err(err)?;
+        let content = fs::read_to_string(&path).map_err(err)?;
         Ok(Document {
+            identity: file_identity(&path),
             path: relative.into(),
             revision: revision(&content),
             content,

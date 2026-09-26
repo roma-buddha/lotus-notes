@@ -2,6 +2,7 @@
 mod ai;
 mod conversion;
 mod layout;
+mod startup;
 mod storage;
 mod transfer;
 mod windows;
@@ -19,11 +20,22 @@ use tauri::{Emitter, Manager};
 use workspace::{Document, Snapshot, Workspace};
 struct Store {
     workspace: Mutex<Workspace>,
+    activation: std::sync::RwLock<()>,
+    jobs: startup::Jobs,
+    scan: Mutex<()>,
     config: PathBuf,
     views: Mutex<std::collections::HashMap<String, Vec<String>>>,
     watcher: Mutex<Option<RecommendedWatcher>>,
     watcher_started: AtomicBool,
     tab_strips: Mutex<std::collections::HashMap<String, TabStripBounds>>,
+}
+
+impl Store {
+    fn handle(&self, generation: Option<u64>) -> Result<Workspace, String> {
+        let _activation = self.activation.read().map_err(|e| e.to_string())?;
+        self.jobs.validate(generation)?;
+        Ok(self.workspace.lock().map_err(|e| e.to_string())?.clone())
+    }
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -204,18 +216,55 @@ fn browser_url_current(
 #[derive(Clone, serde::Serialize)]
 struct WorkspaceChange {
     structural: bool,
+    generation: u64,
+    paths: Vec<String>,
 }
 
 fn watch_workspace(app: &tauri::AppHandle, state: &Store) -> Result<(), String> {
-    let root = state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .root
-        .clone();
+    let (root, generation) = {
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        (
+            state
+                .workspace
+                .lock()
+                .map_err(|e| e.to_string())?
+                .root
+                .clone(),
+            state.jobs.generation.load(Ordering::Acquire),
+        )
+    };
+    let event_root = root.clone();
     let emitter = app.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if let Ok(event) = event {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                let state = emitter.state::<Store>();
+                if generation == state.jobs.generation.load(Ordering::Acquire) {
+                    state.watcher_started.store(false, Ordering::Release);
+                    let _ = emitter.emit("lotus-watcher-error", error.to_string());
+                }
+                return;
+            }
+        };
+        {
+            if matches!(event.kind, EventKind::Access(_)) {
+                return;
+            }
+            let paths: Vec<String> = event
+                .paths
+                .iter()
+                .filter_map(|p| p.strip_prefix(&event_root).ok())
+                .filter(|p| {
+                    !p.components()
+                        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+                })
+                .filter(|p| !p.to_string_lossy().ends_with(".lattice-tmp"))
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect();
+            if paths.is_empty() {
+                return;
+            }
             // Content changes only reconcile open notes. A full tree walk is for
             // creates, deletes, and renames, rather than every autosave.
             let structural = matches!(
@@ -224,26 +273,64 @@ fn watch_workspace(app: &tauri::AppHandle, state: &Store) -> Result<(), String> 
                     | EventKind::Remove(_)
                     | EventKind::Modify(ModifyKind::Name(_))
             );
-            let _ = emitter.emit("lotus-workspace-changed", WorkspaceChange { structural });
+            let _ = emitter.emit(
+                "lotus-workspace-changed",
+                WorkspaceChange {
+                    structural,
+                    generation,
+                    paths,
+                },
+            );
         }
     })
     .map_err(|e| e.to_string())?;
     watcher
         .watch(&root, RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
+    if generation != state.jobs.generation.load(Ordering::Acquire) {
+        return Ok(());
+    }
     *state.watcher.lock().map_err(|e| e.to_string())? = Some(watcher);
     Ok(())
 }
 #[tauri::command]
-fn get_organizer(state: tauri::State<Store>) -> Result<storage::OrganizerState, String> {
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .organizer()
+async fn get_organizer(
+    app: tauri::AppHandle,
+    generation: Option<u64>,
+) -> Result<storage::OrganizerState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+
+        let workspace = state.handle(generation)?;
+        let result = get_organizer_blocking(workspace, app.state::<Store>());
+        state.jobs.validate(generation)?;
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn get_organizer_blocking(
+    workspace: Workspace,
+    _state: tauri::State<Store>,
+) -> Result<storage::OrganizerState, String> {
+    workspace.organizer()
 }
 #[tauri::command]
-fn save_organizer(
+async fn save_organizer(
+    app: tauri::AppHandle,
+    value: storage::OrganizerState,
+    generation: Option<u64>,
+) -> Result<storage::OrganizerState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        save_organizer_blocking(app.state::<Store>(), value)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn save_organizer_blocking(
     state: tauri::State<Store>,
     value: storage::OrganizerState,
 ) -> Result<storage::OrganizerState, String> {
@@ -254,12 +341,33 @@ fn save_organizer(
         .save_organizer(value)
 }
 #[tauri::command]
-fn snapshot(state: tauri::State<Store>) -> Result<Snapshot, String> {
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .snapshot()
+async fn snapshot(
+    app: tauri::AppHandle,
+    generation: Option<u64>,
+    request_id: Option<String>,
+) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+
+        let workspace = state.handle(generation)?;
+        let result = snapshot_blocking(workspace, app.state::<Store>(), request_id);
+        state.jobs.validate(generation)?;
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn snapshot_blocking(
+    workspace: Workspace,
+    state: tauri::State<Store>,
+    request_id: Option<String>,
+) -> Result<Snapshot, String> {
+    let job = state
+        .jobs
+        .begin(request_id.unwrap_or_else(|| "full-snapshot".into()));
+    let _scan = state.scan.lock().map_err(|e| e.to_string())?;
+    job.check()?;
+    workspace.scan(&|| job.check())
 }
 fn start_workspace_watcher(app: tauri::AppHandle) {
     let started = app
@@ -274,45 +382,108 @@ fn start_workspace_watcher(app: tauri::AppHandle) {
         let state = app.state::<Store>();
         if let Err(error) = watch_workspace(&app, &state) {
             eprintln!("Lotus could not start workspace watching: {error}");
+            let _ = app.emit("lotus-watcher-error", error);
             state.watcher_started.store(false, Ordering::Release);
         }
     });
 }
 
 #[tauri::command]
-fn startup_snapshot(app: tauri::AppHandle, state: tauri::State<Store>) -> Result<Snapshot, String> {
-    let snapshot = state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .startup_snapshot()?;
-    // The first tree walk must finish before a native recursive watcher begins.
-    // On Windows both enumerate the vault; starting them together made launch
-    // timing depend on which one obtained filesystem access first.
+async fn startup_snapshot(
+    app: tauri::AppHandle,
+    generation: Option<u64>,
+) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+
+        let workspace = state.handle(generation)?;
+        let result = startup_snapshot_blocking(workspace, app.clone(), app.state::<Store>());
+        state.jobs.validate(generation)?;
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn startup_snapshot_blocking(
+    workspace: Workspace,
+    app: tauri::AppHandle,
+    _state: tauri::State<Store>,
+) -> Result<Snapshot, String> {
+    let snapshot = workspace.startup_snapshot()?;
     start_workspace_watcher(app);
     Ok(snapshot)
 }
 #[tauri::command]
-fn search_notes(
+async fn search_notes(
+    app: tauri::AppHandle,
+    query: String,
+    request_id: Option<String>,
+    generation: Option<u64>,
+) -> Result<Vec<workspace::SearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+
+        let workspace = state.handle(generation)?;
+        let result = search_notes_blocking(workspace, app.state::<Store>(), query, request_id);
+        state.jobs.validate(generation)?;
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn search_notes_blocking(
+    workspace: Workspace,
     state: tauri::State<Store>,
     query: String,
+    request_id: Option<String>,
 ) -> Result<Vec<workspace::SearchResult>, String> {
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .search(&query, 80)
+    let job = state
+        .jobs
+        .begin(request_id.unwrap_or_else(|| "search".into()));
+    workspace.search_checked(&query, 80, &|| job.check())
 }
 #[tauri::command]
-fn read_note(state: tauri::State<Store>, path: String) -> Result<Document, String> {
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .read(&path)
+async fn read_note(
+    app: tauri::AppHandle,
+    path: String,
+    generation: Option<u64>,
+) -> Result<Document, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+
+        let workspace = state.handle(generation)?;
+        let result = read_note_blocking(workspace, app.state::<Store>(), path);
+        state.jobs.validate(generation)?;
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn read_note_blocking(
+    workspace: Workspace,
+    _state: tauri::State<Store>,
+    path: String,
+) -> Result<Document, String> {
+    workspace.read(&path)
 }
 #[tauri::command]
-fn write_note(
+async fn write_note(
+    app: tauri::AppHandle,
+    path: String,
+    content: String,
+    revision: String,
+    generation: Option<u64>,
+) -> Result<Document, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        write_note_blocking(app.state::<Store>(), path, content, revision)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn write_note_blocking(
     state: tauri::State<Store>,
     path: String,
     content: String,
@@ -325,7 +496,23 @@ fn write_note(
         .write(&path, &content, &revision)
 }
 #[tauri::command]
-fn create_entry(
+async fn create_entry(
+    app: tauri::AppHandle,
+    parent: String,
+    kind: String,
+    name: String,
+    generation: Option<u64>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        create_entry_blocking(app.state::<Store>(), parent, kind, name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn create_entry_blocking(
     state: tauri::State<Store>,
     parent: String,
     kind: String,
@@ -338,7 +525,22 @@ fn create_entry(
         .create(&parent, &kind, &name)
 }
 #[tauri::command]
-fn import_markdown(
+async fn import_markdown(
+    app: tauri::AppHandle,
+    parent: String,
+    sources: Vec<String>,
+    generation: Option<u64>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        import_markdown_blocking(app.state::<Store>(), parent, sources)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn import_markdown_blocking(
     state: tauri::State<Store>,
     parent: String,
     sources: Vec<String>,
@@ -350,7 +552,31 @@ fn import_markdown(
         .import_markdown(&parent, &sources)
 }
 #[tauri::command]
-fn relocate_entry(
+async fn relocate_entry(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    path: String,
+    parent: String,
+    name: String,
+    generation: Option<u64>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        relocate_entry_blocking(
+            window,
+            app.clone(),
+            app.state::<Store>(),
+            path,
+            parent,
+            name,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn relocate_entry_blocking(
     window: tauri::Webview,
     app: tauri::AppHandle,
     state: tauri::State<Store>,
@@ -371,7 +597,22 @@ fn relocate_entry(
     Ok(next)
 }
 #[tauri::command]
-fn delete_entry(
+async fn delete_entry(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    path: String,
+    generation: Option<u64>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        delete_entry_blocking(window, app.clone(), app.state::<Store>(), path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn delete_entry_blocking(
     window: tauri::Webview,
     app: tauri::AppHandle,
     state: tauri::State<Store>,
@@ -385,7 +626,21 @@ fn delete_entry(
         .remove(&path)
 }
 #[tauri::command]
-fn reveal_vault(state: tauri::State<Store>, path: String) -> Result<(), String> {
+async fn reveal_vault(
+    app: tauri::AppHandle,
+    path: String,
+    generation: Option<u64>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        reveal_vault_blocking(app.state::<Store>(), path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn reveal_vault_blocking(state: tauri::State<Store>, path: String) -> Result<(), String> {
     let workspace = state.workspace.lock().map_err(|e| e.to_string())?;
     if path.contains('/') {
         return Err("Choose a vault.".into());
@@ -402,10 +657,7 @@ fn reveal_vault(state: tauri::State<Store>, path: String) -> Result<(), String> 
     Ok(())
 }
 #[tauri::command]
-async fn choose_root(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Store>,
-) -> Result<bool, String> {
+async fn choose_root(app: tauri::AppHandle) -> Result<bool, String> {
     if app.webview_windows().len() > 1 {
         return Err("Close detached windows before changing the workspace.".into());
     }
@@ -416,19 +668,35 @@ async fn choose_root(
     else {
         return Ok(false);
     };
-    let next = Workspace::open(folder.path().into())?;
-    fs::write(
-        &state.config,
-        serde_json::to_string(next.home.as_ref().unwrap_or(&next.root))
-            .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    *state.workspace.lock().map_err(|e| e.to_string())? = next;
-    watch_workspace(&app, &state)?;
-    Ok(true)
+    let folder = folder.path().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        let next = Workspace::open(folder)?;
+        let state = app.state::<Store>();
+        let _activation = state.activation.write().map_err(|e| e.to_string())?;
+        if let Some(parent) = state.config.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(
+            &state.config,
+            serde_json::to_string(next.home.as_ref().unwrap_or(&next.root))
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        *state.workspace.lock().map_err(|e| e.to_string())? = next;
+        state.jobs.activate();
+        state.watcher_started.store(false, Ordering::Release);
+        drop(_activation);
+        start_workspace_watcher(app.clone());
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-async fn import_vault(state: tauri::State<'_, Store>) -> Result<Option<String>, String> {
+async fn import_vault(
+    app: tauri::AppHandle,
+    generation: Option<u64>,
+) -> Result<Option<String>, String> {
     let Some(folder) = rfd::AsyncFileDialog::new()
         .set_title("Import a vault (copies files; originals stay in place)")
         .pick_folder()
@@ -436,12 +704,21 @@ async fn import_vault(state: tauri::State<'_, Store>) -> Result<Option<String>, 
     else {
         return Ok(None);
     };
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .import(folder.path())
-        .map(Some)
+    let folder = folder.path().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        let result = state
+            .workspace
+            .lock()
+            .map_err(|e| e.to_string())?
+            .import(&folder)
+            .map(Some);
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
@@ -475,20 +752,62 @@ fn open_external(url: String) -> Result<(), String> {
     Err("Opening websites is supported on Windows.".into())
 }
 #[tauri::command]
-fn preview_conversion(
-    state: tauri::State<Store>,
+async fn preview_conversion(
+    app: tauri::AppHandle,
+    source: String,
+    parent: String,
+    name: String,
+    generation: Option<u64>,
+) -> Result<conversion::Conversion, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+
+        let workspace = state.handle(generation)?;
+        let result =
+            preview_conversion_blocking(workspace, app.state::<Store>(), source, parent, name);
+        state.jobs.validate(generation)?;
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn preview_conversion_blocking(
+    workspace: Workspace,
+    _state: tauri::State<Store>,
     source: String,
     parent: String,
     name: String,
 ) -> Result<conversion::Conversion, String> {
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .conversion_preview(&source, &parent, &name)
+    workspace.conversion_preview(&source, &parent, &name)
 }
 #[tauri::command]
-fn convert_vault(
+async fn convert_vault(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    source: String,
+    parent: String,
+    name: String,
+    revision: String,
+    generation: Option<u64>,
+) -> Result<conversion::Conversion, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        convert_vault_blocking(
+            window,
+            app.clone(),
+            app.state::<Store>(),
+            source,
+            parent,
+            name,
+            revision,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn convert_vault_blocking(
     window: tauri::Webview,
     app: tauri::AppHandle,
     state: tauri::State<Store>,
@@ -580,8 +899,12 @@ async fn import_backup(
         serde_json::to_vec(next.home.as_ref().unwrap()).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    let _activation = state.activation.write().map_err(|e| e.to_string())?;
     *state.workspace.lock().map_err(|e| e.to_string())? = next;
-    watch_workspace(&app, &state)?;
+    state.jobs.activate();
+    state.watcher_started.store(false, Ordering::Release);
+    drop(_activation);
+    start_workspace_watcher(app.clone());
     Ok(Some(restored))
 }
 
@@ -644,39 +967,15 @@ fn main() {
                 }
             }
             let config_dir = app.path().app_data_dir()?;
-            fs::create_dir_all(&config_dir)?;
             let config = config_dir.join("workspace.json");
-            let root = std::env::var_os("NOTUS_ROOT")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    fs::read_to_string(&config)
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<PathBuf>(&s).ok())
-                })
-                .unwrap_or_else(|| {
-                    let documents = app.path().document_dir().expect("Documents folder");
-                    let legacy = documents.join("Notus");
-                    if legacy.exists() {
-                        return legacy;
-                    }
-                    rfd::FileDialog::new()
-                        .set_title(
-                            "Choose where to create Lotus storage (Cancel uses Documents/Lotus)",
-                        )
-                        .set_directory(&documents)
-                        .pick_folder()
-                        .map(|parent| parent.join("Lotus"))
-                        .unwrap_or(documents.join("Lotus"))
-                });
             let store = Store {
-                workspace: Mutex::new(
-                    if std::env::var_os("NOTUS_ROOT").is_some() {
-                        Workspace::new(root)
-                    } else {
-                        Workspace::open(root)
-                    }
-                    .map_err(std::io::Error::other)?,
-                ),
+                workspace: Mutex::new(Workspace {
+                    root: PathBuf::new(),
+                    home: None,
+                }),
+                activation: std::sync::RwLock::new(()),
+                jobs: startup::Jobs::default(),
+                scan: Mutex::new(()),
                 config,
                 views: Mutex::new(std::collections::HashMap::new()),
                 watcher: Mutex::new(None),
@@ -717,6 +1016,10 @@ fn main() {
             save_organizer,
             snapshot,
             startup_snapshot,
+            startup::workspace_bootstrap,
+            startup::list_directory,
+            startup::cancel_workspace_request,
+            startup::retry_workspace_watcher,
             search_notes,
             read_note,
             write_note,

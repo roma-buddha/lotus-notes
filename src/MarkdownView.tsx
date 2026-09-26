@@ -8,8 +8,7 @@ import type { NoteAppearance } from "./noteAppearance";
 import { displayColor } from "./inlineContent";
 import { remarkExtras } from "./remarkExtras";
 import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import "katex/dist/katex.min.css";
+import { useEffect, useState } from "react";
 import type { Root, Element } from "hast";
 // Sanitize source styles before trusted KaTeX creates its layout spans.
 function safeSourceStyles() {
@@ -49,19 +48,41 @@ export function MarkdownView({
   appearance: NoteAppearance;
   openLink: (href: string) => void;
 }) {
+  const [math, setMath] = useState<typeof import("./mathSupport") | null>(null);
+  const [mathError, setMathError] = useState(false);
+  const needsMath = content.includes("$");
+  useEffect(() => {
+    if (!needsMath || math) return;
+    let cancelled = false;
+    void import("./mathSupport")
+      .then((value) => {
+        if (!cancelled) setMath(value);
+      })
+      .catch(() => {
+        if (!cancelled) setMathError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsMath, math]);
   const tables = findTables(content);
   const diagrams = [
     ...content.matchAll(/^(`{3,}|~{3,})mermaid[^\S\n]*\r?\n/gm),
   ].map((m) => m.index);
   return (
     <article className="reading">
+      {mathError && (
+        <p role="status">
+          Math rendering could not load. Reopen Lotus to retry.
+        </p>
+      )}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkExtras, remarkMath]}
         rehypePlugins={[
           rehypeRaw,
           safeSourceStyles,
           [rehypeSanitize, schema],
-          rehypeKatex,
+          ...(math ? [math.default] : []),
         ]}
         components={{
           p: ({ node, children }) => {
@@ -72,9 +93,7 @@ export function MarkdownView({
             return (
               <p
                 className={
-                  /[A-Za-z]:\\|file:\/\/|(?:https?:\/\/|www\.)\S{40}/.test(
-                    raw,
-                  )
+                  /[A-Za-z]:\\|file:\/\/|(?:https?:\/\/|www\.)\S{40}/.test(raw)
                     ? "source-path"
                     : String(node?.properties.className ?? "")
                 }

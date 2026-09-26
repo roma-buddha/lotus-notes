@@ -2,7 +2,7 @@
 
 A Windows Markdown app with a quiet, focused interface. Opens directly into your notes. No Lotus account, server, local AI runtime, database, or starter content. Optional AI connects directly to your chosen provider using your own API key.
 
-## Install Lotus 1.0.2
+## Install Lotus
 
 Lotus is a Windows-first, local-first Markdown knowledge workspace. Your notes stay as ordinary UTF-8 Markdown files in a folder you choose. It includes vault and folder organization, editable notes, tabs and split views, a contained browser tab, portable import/export, and optional bring-your-own-key AI providers.
 
@@ -23,7 +23,7 @@ git clone https://github.com/roma-buddha/lotus-notes.git lotus
 cd lotus
 npm ci
 npm run package:win
-Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.2_x64-setup.exe
+Start-Process .\src-tauri\target\release\bundle\nsis\Lotus_1.0.3_x64-setup.exe
 ```
 
 For development rather than installation, run `npm run dev` after `npm ci`.
@@ -50,7 +50,7 @@ Tauri 2 / Rust for native windows and validated filesystem operations; React 19 
 
 ## Workspace
 
-New installations ask where to create a Lotus storage folder on first launch (Cancel uses Documents/Lotus). Existing installations retain their chosen parent folder and organize vault directories under **Vaults**. Internal metadata and Trash become **.lotus-state** and **.lotus-trash**, alongside Vaults. Existing relative note identities are preserved and local bookmarks/appearance preferences migrate to the new root. Close detached windows before switching workspaces.
+New installations show workspace setup after the shell opens. Existing workspaces load vaults first and discover folder contents as needed, with background indexing and retry controls for delayed operations. Existing installations retain their chosen parent folder and organize vault directories under **Vaults**. Internal metadata and Trash become **.lotus-state** and **.lotus-trash**, alongside Vaults. Existing relative note identities are preserved and local bookmarks/appearance preferences migrate to the new root. Close detached windows before switching workspaces.
 
 ```text
 Lotus/                        # your chosen storage folder

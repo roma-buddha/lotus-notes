@@ -1,6 +1,6 @@
 {
   "name": "lotus",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "description": "A calm Markdown workspace for vaults, folders, and notes.",

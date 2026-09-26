@@ -2,6 +2,17 @@
 
 This is Lotus’s built-in, read-only release record. It opens from **Settings → About** and is stored with the application rather than in a vault. Every release entry records its date, user-facing behavior, compatibility or data-handling notes, and verification. Future releases must add a dated, detailed entry here before packaging.
 
+## 1.0.3 — 2026-09-26 — Responsive startup
+
+- Render the shell before workspace initialization, load vaults and folders incrementally, and run scans and filesystem commands on native workers.
+- Keep note reads and saves responsive during indexing. Cancel superseded searches and ignore results from previous workspace activations.
+- Load editor, AI chat, diagrams, and math features on demand; retain AI conversations when the chat panel closes.
+- Show delayed-operation status and recovery controls. Preserve draft recovery, revision checks, split panes, detached notes, and external rename handling with partial folder data.
+
+**Compatibility:** no note-format changes or automatic reopening of the last note. Existing migration safeguards and local drafts remain supported; directory caches are provisional.
+
+**Verification:** frontend tests, native tests (including paused-scan concurrency), lint, production build, and isolated packaged native smoke passed. Disposable 100–50,000-note Windows benchmarks measured shell readiness at 115–439 ms after WebView navigation and first editable note at 154–368 ms. See artifacts/STARTUP-VALIDATION.md for methodology and limits.
+
 ## 1.0.2 — 2026-09-14 — Titlebar drag surface
 
 - Restored native window dragging from the unused portion of the tab bar. The visible empty tab-strip area is now a dedicated Windows drag region, while note tabs themselves remain independently clickable and reorderable.

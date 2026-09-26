@@ -1,12 +1,36 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as nativeInvoke } from "@tauri-apps/api/core";
+import { readDeadline } from "./readDeadline";
+import { loadEditorRuntime } from "./editorBridge";
+import {
+  initializeWorkspace,
+  workspaceGeneration,
+  completeSnapshot,
+  resetWorkspace,
+} from "./workspaceClient";
+async function invoke<T>(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
+  const generation = workspaceGeneration();
+  const value = await nativeInvoke<T>(command, { ...args, generation });
+  if (generation !== workspaceGeneration())
+    throw new Error("Workspace changed.");
+  return value;
+}
 export type Entry = {
+  childrenLoaded?: boolean;
   name: string;
   path: string;
   kind: "vault" | "folder" | "note";
   children: Entry[];
   identity?: string | null;
 };
-export type Snapshot = { root: string; entries: Entry[]; legacy_root?: string | null };
+export type Snapshot = {
+  complete?: boolean;
+  root: string;
+  entries: Entry[];
+  legacy_root?: string | null;
+};
 export type Area = { id: string; name: string; icon: string };
 export type OrganizerState = {
   revision: number;
@@ -15,6 +39,7 @@ export type OrganizerState = {
   orders: Record<string, string[]>;
 };
 export type Document = {
+  identity?: string | null;
   path: string;
   content: string;
   revision: string;
@@ -28,11 +53,30 @@ export type TrashItem = {
   kind: Entry["kind"];
   deleted: number;
 };
-export type BackupPreview = { archive:string; revision:string; manifest:{source_root:string;include_vaults:boolean;include_trash:boolean;files:{path:string;size:number;sha256:string}[];settings:Record<string,string>} };
+export type BackupPreview = {
+  archive: string;
+  revision: string;
+  manifest: {
+    source_root: string;
+    include_vaults: boolean;
+    include_trash: boolean;
+    files: { path: string; size: number; sha256: string }[];
+    settings: Record<string, string>;
+  };
+};
 export const api = {
-  exportBackup:(settings:Record<string,string>,vaults:boolean,trash:boolean)=>invoke<string|null>("export_backup",{settings,vaults,trash}),
-  previewBackup:()=>invoke<BackupPreview|null>("preview_backup"),
-  importBackup:(plan:BackupPreview,settings:boolean)=>invoke<{root:string;source_root:string;settings:Record<string,string>}|null>("import_backup",{plan,settings}),
+  exportBackup: (
+    settings: Record<string, string>,
+    vaults: boolean,
+    trash: boolean,
+  ) => invoke<string | null>("export_backup", { settings, vaults, trash }),
+  previewBackup: () => invoke<BackupPreview | null>("preview_backup"),
+  importBackup: (plan: BackupPreview, settings: boolean) =>
+    invoke<{
+      root: string;
+      source_root: string;
+      settings: Record<string, string>;
+    } | null>("import_backup", { plan, settings }),
   readClipboard: () => invoke<string>("read_clipboard"),
   writeClipboard: (text: string) => invoke<void>("write_clipboard", { text }),
   previewConversion: (source: string, parent: string, name: string) =>
@@ -47,10 +91,21 @@ export const api = {
   organizer: () => invoke<OrganizerState>("get_organizer"),
   saveOrganizer: (value: OrganizerState) =>
     invoke<OrganizerState>("save_organizer", { value }),
-  snapshot: () => invoke<Snapshot>("snapshot"),
-  startupSnapshot: () => invoke<Snapshot>("startup_snapshot"),
-  search: (query: string) => invoke<SearchResult[]>("search_notes", { query }),
-  read: (path: string) => invoke<Document>("read_note", { path }),
+  snapshot: completeSnapshot,
+  startupSnapshot: initializeWorkspace,
+  search: (query: string, requestId?: string) =>
+    invoke<SearchResult[]>("search_notes", { query, requestId }),
+  cancel: (requestId: string) =>
+    nativeInvoke<void>("cancel_workspace_request", { requestId }),
+  read: async (path: string) => {
+    const [note] = await readDeadline(
+      Promise.all([
+        invoke<Document>("read_note", { path }),
+        loadEditorRuntime(),
+      ]),
+    );
+    return note;
+  },
   write: (path: string, content: string, revision: string) =>
     invoke<Document>("write_note", { path, content, revision }),
   create: (parent: string, kind: Entry["kind"], name: string) =>
@@ -61,7 +116,15 @@ export const api = {
     invoke<string>("relocate_entry", { path, parent, name }),
   remove: (path: string) => invoke<void>("delete_entry", { path }),
   reveal: (path: string) => invoke<void>("reveal_vault", { path }),
-  chooseRoot: () => invoke<boolean>("choose_root"),
+  chooseRoot: async () => {
+    const changed = await nativeInvoke<boolean>("choose_root");
+    if (changed) {
+      resetWorkspace();
+      await initializeWorkspace();
+    }
+    return changed;
+  },
+  retryWatcher: () => nativeInvoke<void>("retry_workspace_watcher"),
   importVault: () => invoke<string | null>("import_vault"),
   listTrash: () => invoke<TrashItem[]>("list_trash"),
   restore: (id: string) => invoke<string>("restore_trash", { id }),
@@ -73,14 +136,22 @@ export const api = {
   detach: (path: string, atCursor: boolean) =>
     invoke<string>("detach_note", { path, atCursor }),
   focusMain: (path: string) => invoke<boolean>("focus_main", { path }),
-  registerTabStrip: (bounds: { x: number; y: number; width: number; height: number }) =>
-    invoke<void>("register_tab_strip", { bounds }),
-  tabDropTarget: () => invoke<{ label: string; client_x: number } | null>("tab_drop_target"),
+  registerTabStrip: (bounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) => invoke<void>("register_tab_strip", { bounds }),
+  tabDropTarget: () =>
+    invoke<{ label: string; client_x: number } | null>("tab_drop_target"),
   releaseHistory: () => invoke<string>("release_history"),
-  browserNavigate: (label: string, url: string) => invoke<string>("browser_navigate", { label, url }),
+  browserNavigate: (label: string, url: string) =>
+    invoke<string>("browser_navigate", { label, url }),
   browserReload: (label: string) => invoke<void>("browser_reload", { label }),
-  browserHistory: (label: string, forward: boolean) => invoke<void>("browser_history", { label, forward }),
-  browserUrl: (label: string) => invoke<string>("browser_url_current", { label }),
+  browserHistory: (label: string, forward: boolean) =>
+    invoke<void>("browser_history", { label, forward }),
+  browserUrl: (label: string) =>
+    invoke<string>("browser_url_current", { label }),
 };
 export type Conversion = {
   source: string;

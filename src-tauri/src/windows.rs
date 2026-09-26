@@ -24,7 +24,23 @@ pub fn check_other_views(
     Ok(())
 }
 #[tauri::command]
-pub fn register_view(
+pub async fn register_view(
+    app: tauri::AppHandle,
+    window: tauri::Webview,
+    path: Option<String>,
+    additional: Option<Vec<String>>,
+    generation: Option<u64>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        register_view_blocking(window, app.state::<Store>(), path, additional)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn register_view_blocking(
     window: tauri::Webview,
     state: tauri::State<Store>,
     path: Option<String>,
@@ -57,7 +73,20 @@ pub fn register_view(
     Ok(())
 }
 #[tauri::command]
-pub fn list_trash(state: tauri::State<Store>) -> Result<Vec<TrashItem>, String> {
+pub async fn list_trash(
+    app: tauri::AppHandle,
+    generation: Option<u64>,
+) -> Result<Vec<TrashItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        list_trash_blocking(app.state::<Store>())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn list_trash_blocking(state: tauri::State<Store>) -> Result<Vec<TrashItem>, String> {
     state
         .workspace
         .lock()
@@ -65,7 +94,21 @@ pub fn list_trash(state: tauri::State<Store>) -> Result<Vec<TrashItem>, String> 
         .list_trash()
 }
 #[tauri::command]
-pub fn restore_trash(state: tauri::State<Store>, id: String) -> Result<String, String> {
+pub async fn restore_trash(
+    app: tauri::AppHandle,
+    id: String,
+    generation: Option<u64>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        restore_trash_blocking(app.state::<Store>(), id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn restore_trash_blocking(state: tauri::State<Store>, id: String) -> Result<String, String> {
     state
         .workspace
         .lock()
@@ -73,7 +116,21 @@ pub fn restore_trash(state: tauri::State<Store>, id: String) -> Result<String, S
         .restore(&id)
 }
 #[tauri::command]
-pub fn purge_trash(state: tauri::State<Store>, ids: Vec<String>) -> Result<(), String> {
+pub async fn purge_trash(
+    app: tauri::AppHandle,
+    ids: Vec<String>,
+    generation: Option<u64>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        purge_trash_blocking(app.state::<Store>(), ids)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn purge_trash_blocking(state: tauri::State<Store>, ids: Vec<String>) -> Result<(), String> {
     state
         .workspace
         .lock()
@@ -81,7 +138,23 @@ pub fn purge_trash(state: tauri::State<Store>, ids: Vec<String>) -> Result<(), S
         .purge(&ids)
 }
 #[tauri::command]
-pub fn set_locked(
+pub async fn set_locked(
+    path: String,
+    locked: bool,
+    revision: String,
+    app: tauri::AppHandle,
+    generation: Option<u64>,
+) -> Result<Document, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Store>();
+        let _activation = state.activation.read().map_err(|e| e.to_string())?;
+        state.jobs.validate(generation)?;
+        set_locked_blocking(app.state::<Store>(), path, locked, revision, app.clone())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+fn set_locked_blocking(
     state: tauri::State<Store>,
     path: String,
     locked: bool,

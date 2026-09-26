@@ -13,6 +13,7 @@ export function NoteSearch({
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let cancelled = false;
+    const requestId = "search:" + crypto.randomUUID();
     const timer = setTimeout(() => {
       if (query.trim().length < 2) {
         setResults([]);
@@ -22,7 +23,7 @@ export function NoteSearch({
       setBusy(true);
       void (async () => {
         try {
-          const found = await api.search(query);
+          const found = await api.search(query, requestId);
           if (!cancelled) setResults(found);
         } catch {
           if (!cancelled) setResults([]);
@@ -34,13 +35,18 @@ export function NoteSearch({
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      void api.cancel(requestId).catch(() => {});
     };
   }, [query]);
   return (
     <div className="note-search-results" aria-label="Search results">
       {busy && <p role="status">Searching notes…</p>}
-      {!busy && query.trim().length < 2 && <p className="muted">Type at least two characters.</p>}
-      {!busy && query.trim().length >= 2 && !results.length && <p className="muted">No matching notes.</p>}
+      {!busy && query.trim().length < 2 && (
+        <p className="muted">Type at least two characters.</p>
+      )}
+      {!busy && query.trim().length >= 2 && !results.length && (
+        <p className="muted">No matching notes.</p>
+      )}
       {results.map((result) => (
         <button
           key={result.path}

@@ -1,0 +1,67 @@
+{
+  "executable": "C:\\Users\\valer\\Documents\\ChatGPT\\Obsidian Clone\\src-tauri\\target\\release\\lotus.exe",
+  "fixture": "C:\\Users\\valer\\AppData\\Local\\Temp\\lotus-startup-OTWkBK",
+  "results": [
+    {
+      "count": 100,
+      "mode": "cold",
+      "processToShellMs": 1235,
+      "webviewToShellMs": 115,
+      "vaultsMs": 200,
+      "firstNoteMs": 362,
+      "readSaveMs": 18.600000023841858,
+      "obsoleteWriteRejected": true,
+      "detachedNoteWithoutScan": true
+    },
+    {
+      "count": 100,
+      "mode": "cached",
+      "processToShellMs": 536,
+      "webviewToShellMs": 125,
+      "vaultsMs": 208,
+      "firstNoteMs": 368,
+      "readSaveMs": 15.299999952316284,
+      "obsoleteWriteRejected": true
+    },
+    {
+      "count": 10000,
+      "mode": "cold",
+      "processToShellMs": 592,
+      "webviewToShellMs": 118,
+      "vaultsMs": 205,
+      "firstNoteMs": 351,
+      "readSaveMs": 17.09999990463257,
+      "obsoleteWriteRejected": true
+    },
+    {
+      "count": 10000,
+      "mode": "cached",
+      "processToShellMs": 943,
+      "webviewToShellMs": 439,
+      "vaultsMs": 563,
+      "firstNoteMs": 154,
+      "readSaveMs": 22.90000009536743,
+      "obsoleteWriteRejected": true
+    },
+    {
+      "count": 50000,
+      "mode": "cold",
+      "processToShellMs": 676,
+      "webviewToShellMs": 145,
+      "vaultsMs": 265,
+      "firstNoteMs": 317,
+      "readSaveMs": 18.199999928474426,
+      "obsoleteWriteRejected": true
+    },
+    {
+      "count": 50000,
+      "mode": "cached",
+      "processToShellMs": 684,
+      "webviewToShellMs": 153,
+      "vaultsMs": 260,
+      "firstNoteMs": 365,
+      "readSaveMs": 14,
+      "obsoleteWriteRejected": true
+    }
+  ]
+}
