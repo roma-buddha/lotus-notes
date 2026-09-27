@@ -134,7 +134,7 @@ export function decorate(view: Pick<EditorView, "state">) {
       hide(start, start + prefix);
       mark(start + prefix, start + prefix + label.length, "cm-note-link", {
         "data-note-href": href,
-        title: "Ctrl+click to open link",
+        title: "Click to open link",
       });
       hide(start + prefix + label.length, start + match[0].length);
     }

@@ -491,7 +491,7 @@ class TableWidget extends WidgetType {
           const link = (e.target as HTMLElement).closest<HTMLElement>(
             "[data-note-href]",
           );
-          if (link && (e.ctrlKey || e.metaKey)) {
+          if (link) {
             e.preventDefault();
             e.stopPropagation();
             root.dispatchEvent(

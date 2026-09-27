@@ -2614,28 +2614,65 @@ export default function App() {
     };
     const link = (event: Event) =>
       run(() => openLink((event as CustomEvent<string>).detail));
-    const click = (event: MouseEvent) => {
+    // A plain press-and-release on a rendered link follows it; dragging
+    // across the link still extends a text selection. Ctrl+click keeps
+    // working and opens immediately on pointer down.
+    let linkDown: { x: number; y: number } | null = null;
+    let suppressClick = false;
+    const follow = (el: HTMLElement) =>
+      run(() =>
+        openLink(
+          el.dataset.noteHref!,
+          el.closest(".secondary-pane") ? "secondary" : "primary",
+        ),
+      );
+    const down = (event: PointerEvent) => {
       const el = (event.target as HTMLElement).closest<HTMLElement>(
         "[data-note-href]",
       );
-      if (el && event.button === 0 && (event.ctrlKey || event.metaKey)) {
+      linkDown = null;
+      if (!el || event.button !== 0) return;
+      if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         event.stopPropagation();
-        run(() =>
-          openLink(
-            el.dataset.noteHref!,
-            el.closest(".secondary-pane") ? "secondary" : "primary",
-          ),
-        );
+        suppressClick = true;
+        follow(el);
+        return;
       }
+      linkDown = { x: event.clientX, y: event.clientY };
+    };
+    const up = (event: PointerEvent) => {
+      const start = linkDown;
+      linkDown = null;
+      if (!start || event.button !== 0) return;
+      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5)
+        return;
+      const el = (event.target as HTMLElement).closest<HTMLElement>(
+        "[data-note-href]",
+      );
+      if (!el) return;
+      event.preventDefault();
+      event.stopPropagation();
+      suppressClick = true;
+      follow(el);
+    };
+    const click = (event: MouseEvent) => {
+      if (!suppressClick) return;
+      suppressClick = false;
+      event.preventDefault();
+      event.stopPropagation();
     };
     window.addEventListener("notus-table-widths", width);
     window.addEventListener("lotus-open-link", link);
-    window.addEventListener("pointerdown", click, true);
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("click", click, true);
     return () => {
       window.removeEventListener("notus-table-widths", width);
       window.removeEventListener("lotus-open-link", link);
-      window.removeEventListener("pointerdown", click, true);
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("click", click, true);
     };
   });
 
