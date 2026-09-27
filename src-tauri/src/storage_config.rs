@@ -67,6 +67,81 @@ fn attach(vaults: &Path, data: &Path) -> Result<Workspace, String> {
     workspace.internal_dir(".notus-trash")?;
     Ok(workspace)
 }
+/// Human-readable name for the per-vaults storage folder, e.g.
+/// `H - 00. Obsidian` for `H:\My Drive\00. Obsidian`.
+fn location_slug(root: &Path) -> String {
+    let drive = root
+        .components()
+        .find_map(|component| match component {
+            std::path::Component::Prefix(prefix) => match prefix.kind() {
+                std::path::Prefix::Disk(letter) => Some(letter),
+                _ => None,
+            },
+            _ => None,
+        })
+        .map(|letter| (letter as char).to_uppercase().to_string())
+        .unwrap_or_else(|| "Drive".into());
+    let last = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| format!("Drive {drive}"));
+    let sanitized: String = last
+        .chars()
+        .filter_map(|c| {
+            if c.is_control() || "<>:\"/\\|?*".contains(c) {
+                None
+            } else {
+                Some(c)
+            }
+        })
+        .collect::<String>()
+        .trim_end_matches(['.', ' '])
+        .chars()
+        .take(48)
+        .collect();
+    let name = if sanitized.is_empty() {
+        "Vaults".to_string()
+    } else {
+        sanitized
+    };
+    format!("{drive} - {name}")
+}
+#[derive(Serialize, Deserialize)]
+struct LocationMarker {
+    root: String,
+}
+fn marker_root(path: &Path) -> Option<PathBuf> {
+    let marker: LocationMarker =
+        serde_json::from_slice(&fs::read(path.join("vaults.json")).ok()?).ok()?;
+    Some(PathBuf::from(marker.root))
+}
+/// Folder that keeps state and Trash for one vaults location. Reuses an
+/// existing folder for the same root, including legacy full-hash folders,
+/// and never takes over a folder that belongs to a different vaults root.
+fn location_dir(base: &Path, root: &Path) -> Result<PathBuf, String> {
+    let identity = root.to_string_lossy().to_lowercase();
+    let hash = format!("{:x}", Sha256::digest(identity.as_bytes()));
+    let legacy = base.join(hash);
+    if legacy.is_dir() {
+        return Ok(legacy);
+    }
+    let slug = location_slug(root);
+    for n in 1..100 {
+        let candidate = base.join(if n == 1 {
+            slug.clone()
+        } else {
+            format!("{slug} {n}")
+        });
+        match marker_root(&candidate) {
+            Some(existing) if existing == *root => return Ok(candidate),
+            Some(_) => continue,
+            None if !candidate.exists() => return Ok(candidate),
+            None => continue,
+        }
+    }
+    Err("Could not allocate a storage folder for these vaults.".into())
+}
 pub fn select_vaults(selected: &Path, app_data: &Path) -> Result<Workspace, String> {
     let root = ordinary_dir(selected)?;
     // Accept either the old storage home or its displayed Vaults folder.
@@ -97,9 +172,24 @@ pub fn select_vaults(selected: &Path, app_data: &Path) -> Result<Workspace, Stri
     if app_data.starts_with(&root) || root.starts_with(app_data.join("workspaces")) {
         return Err("Choose a vaults subfolder or a separate folder, not the app-data folder or its parent.".into());
     }
-    let identity = root.to_string_lossy().to_lowercase();
-    let key = format!("{:x}", Sha256::digest(identity.as_bytes()));
-    attach(&root, &app_data.join("workspaces").join(key))
+    let data = location_dir(&app_data.join("workspaces"), &root)?;
+    let workspace = attach(&root, &data)?;
+    atomic(
+        &data.join("vaults.json"),
+        &LocationMarker {
+            root: root.to_string_lossy().into_owned(),
+        },
+    )?;
+    Ok(workspace)
+}
+fn atomic(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("Invalid storage folder.")?)
+        .map_err(|e| e.to_string())?;
+    file.write_all(&serde_json::to_vec(value).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -166,6 +256,54 @@ mod tests {
         let legacy: StorageConfig =
             serde_json::from_value(serde_json::json!(old.home.unwrap())).unwrap();
         assert_eq!(legacy.open().unwrap().root, old.root);
+    }
+    #[test]
+    fn location_folders_are_readable_stable_and_deduplicated() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("App data");
+        let first = temp.path().join("My vaults");
+        fs::create_dir(&first).unwrap();
+        let first_ws = select_vaults(&first, &data).unwrap();
+        let first_home = first_ws.home.clone().unwrap();
+        let slug = first_home.file_name().unwrap().to_string_lossy();
+        assert!(slug.contains("My vaults"), "unexpected slug: {slug}");
+        assert!(!slug.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+        // Re-selecting the same root reuses the same storage folder.
+        assert_eq!(select_vaults(&first, &data).unwrap().home, first_ws.home);
+        // A different root with the same folder name gets its own folder.
+        let parent = temp.path().join("elsewhere");
+        let second = parent.join("My vaults");
+        fs::create_dir_all(&second).unwrap();
+        let second_home = select_vaults(&second, &data).unwrap().home.unwrap();
+        assert_ne!(second_home, first_home);
+        assert!(second_home.exists());
+        // Both remain distinct after a restart-style re-select.
+        assert_eq!(
+            select_vaults(&first, &data).unwrap().home,
+            Some(first_home.clone())
+        );
+        assert_eq!(
+            select_vaults(&second, &data).unwrap().home,
+            Some(second_home)
+        );
+    }
+    #[test]
+    fn legacy_hash_location_folder_is_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("My vaults");
+        fs::create_dir(&root).unwrap();
+        let data = temp.path().join("App data");
+        // A pre-slug release stored the location folder under a full hash.
+        let identity = root
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase();
+        let hash = format!("{:x}", Sha256::digest(identity.as_bytes()));
+        let legacy = data.join("workspaces").join(hash);
+        fs::create_dir_all(legacy.join(".lotus-state")).unwrap();
+        let workspace = select_vaults(&root, &data).unwrap();
+        assert_eq!(workspace.home.unwrap(), legacy.canonicalize().unwrap());
     }
     #[test]
     fn vaults_can_share_the_app_data_parent_but_missing_roots_are_not_created() {

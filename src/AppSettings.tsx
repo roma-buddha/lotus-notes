@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  FolderOpen,
   Moon,
   Sun,
   Trash2,
@@ -388,14 +387,11 @@ export function AppSettings({
             </>
           ) : tab === "Workspace" ? (
             <>
-              <h3>Vaults folder</h3>
-              <p>
-                This folder contains your vaults and notes. It can be a Vaults
-                subfolder inside your Lotus folder, or a separate location.
-              </p>
-              <p className="settings-path">{root}</p>
-              <div className="settings-buttons">
+              <h3>Vaults</h3>
+              <div className="settings-location">
                 <button
+                  className="settings-path settings-location-path"
+                  title={`Open in File Explorer\n${root}`}
                   disabled={busy}
                   onClick={() =>
                     void run(async () => {
@@ -403,71 +399,86 @@ export function AppSettings({
                     })
                   }
                 >
-                  <FolderOpen size={16} />
-                  Open in File Explorer
+                  {root}
                 </button>
                 <button disabled={busy} onClick={() => void run(changeRoot)}>
-                  Open another vaults folder…
+                  Change folder…
                 </button>
               </div>
               <p className="muted">
-                Select the folder containing your vaults. Opening another
-                location leaves your current files in place; it does not move or
-                reorganize them.
+                Switching only changes where Lotus looks; your files are never
+                moved.
               </p>
-              <h3>Lotus app data</h3>
-              <p>
-                Lotus keeps its configuration here. Release history is included
-                with the app. Existing data stays in place when you change vaults.
-              </p>
+              <h3>Storage</h3>
               {locations ? (
                 <>
-                  <p className="settings-path">{locations.app_data}</p>
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        await api.storageLocations("app_data");
-                      })
-                    }
-                  >
-                    <FolderOpen size={16} /> Open app data in File Explorer
-                  </button>
-                  <details>
-                    <summary>Local preferences, draft recovery, and cache</summary>
-                    <p className="muted">These stay in Lotus's existing Windows browser profile, independently of your vaults folder.</p>
-                    <p className="settings-path">{locations.browser_data}</p>
-                    <button disabled={busy} onClick={() => void run(async () => { await api.storageLocations("browser_data"); })}>
-                      <FolderOpen size={16} /> Open local data in File Explorer
+                  <div className="settings-location">
+                    <span className="settings-location-label">App data</span>
+                    <button
+                      className="settings-path settings-location-path"
+                      title={locations.app_data}
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          await api.storageLocations("app_data");
+                        })
+                      }
+                    >
+                      {locations.app_data}
                     </button>
+                  </div>
+                  <div className="settings-location">
+                    <span className="settings-location-label">State</span>
+                    <button
+                      className="settings-path settings-location-path"
+                      title={locations.workspace_data}
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          await api.storageLocations("workspace_data");
+                        })
+                      }
+                    >
+                      {locations.workspace_data}
+                    </button>
+                  </div>
+                  <div className="settings-location">
+                    <span className="settings-location-label">Trash</span>
+                    <button
+                      className="settings-path settings-location-path"
+                      title={locations.trash}
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          await api.storageLocations("trash");
+                        })
+                      }
+                    >
+                      {locations.trash}
+                    </button>
+                  </div>
+                  <details>
+                    <summary>
+                      Local preferences, draft recovery, and cache
+                    </summary>
+                    <div className="settings-location">
+                      <span className="settings-location-label">
+                        Local data
+                      </span>
+                      <button
+                        className="settings-path settings-location-path"
+                        title={locations.browser_data}
+                        disabled={busy}
+                        onClick={() =>
+                          void run(async () => {
+                            await api.storageLocations("browser_data");
+                          })
+                        }
+                      >
+                        {locations.browser_data}
+                      </button>
+                    </div>
                   </details>
-                  <h3>State and Trash for these vaults</h3>
-                  <p className="muted">
-                    Each vaults location keeps its own state and Trash. Existing
-                    Lotus folders retain their original locations.
-                  </p>
-                  <p className="settings-path">{locations.workspace_data}</p>
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        await api.storageLocations("workspace_data");
-                      })
-                    }
-                  >
-                    <FolderOpen size={16} /> Open state in File Explorer
-                  </button>
-                  <p className="settings-path">{locations.trash}</p>
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        await api.storageLocations("trash");
-                      })
-                    }
-                  >
-                    <FolderOpen size={16} /> Open Trash in File Explorer
-                  </button>
                 </>
               ) : (
                 <p role="status">Loading storage locations…</p>
