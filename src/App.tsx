@@ -423,6 +423,15 @@ export default function App() {
   const [name, setName] = useState("");
   const [dialogError, setDialogError] = useState("");
   const [working, setWorking] = useState(false);
+  const [slowWorking, setSlowWorking] = useState(false);
+  useEffect(() => {
+    if (!working) {
+      setSlowWorking(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlowWorking(true), 4000);
+    return () => window.clearTimeout(timer);
+  }, [working]);
   const current = useRef<{ doc: Document | null; draft: string; root: string }>(
     { doc: null, draft: "", root: "" },
   );
@@ -1064,14 +1073,22 @@ export default function App() {
       );
   };
   const showLink = (target: EditTarget) => {
-    const match = [...target.text.matchAll(/\[([^\]]+)\]\(([^)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g)].find(
+    const match = [
+      ...target.text.matchAll(
+        /\[([^\]]+)\]\(([^)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+      ),
+    ].find(
       (m) => m.index! <= target.from && m.index! + m[0].length >= target.to,
     );
     setLinkDialog({
       target: match
         ? { ...target, from: match.index!, to: match.index! + match[0].length }
         : target,
-      label: match?.[1] || match?.[4] || match?.[3] || target.text.slice(target.from, target.to),
+      label:
+        match?.[1] ||
+        match?.[4] ||
+        match?.[3] ||
+        target.text.slice(target.from, target.to),
       url: match?.[2] || match?.[3] || "",
       query: "",
     });
@@ -2211,7 +2228,10 @@ export default function App() {
       }
       setInline(null);
     } catch (e) {
-      if (created) setError(`The item was created, but could not be opened or refreshed: ${String(e)}`);
+      if (created)
+        setError(
+          `The item was created, but could not be opened or refreshed: ${String(e)}`,
+        );
       else {
         setInline(inline);
         setDialogError(String(e));
@@ -2314,7 +2334,10 @@ export default function App() {
     );
   };
   const changeRoot = async () => {
-    if (!(await saveAll())) throw new Error("Save or recover your open drafts before changing the vaults folder.");
+    if (!(await saveAll()))
+      throw new Error(
+        "Save or recover your open drafts before changing the vaults folder.",
+      );
     if (!(await api.chooseRoot())) return;
     current.current.doc = null;
     current.current.draft = "";
@@ -2778,7 +2801,8 @@ export default function App() {
             <CreateMenu
               disabled={!activeVault || bookmarksOpen || searchOpen}
               create={(kind) =>
-                activeVault && showCreate(kind, kind === "folder" ? activeVault.path : folder)
+                activeVault &&
+                showCreate(kind, kind === "folder" ? activeVault.path : folder)
               }
             />
           </div>
@@ -4707,6 +4731,11 @@ export default function App() {
             {dialogError && (
               <p className="dialog-error" role="alert">
                 {dialogError}
+              </p>
+            )}
+            {working && slowWorking && (
+              <p className="muted" role="status">
+                Still working — cloud-synced notes can take a moment.
               </p>
             )}
             <footer className="dialog-footer">

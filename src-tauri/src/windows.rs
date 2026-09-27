@@ -109,11 +109,10 @@ pub async fn restore_trash(
     .map_err(|e| e.to_string())?
 }
 fn restore_trash_blocking(state: tauri::State<Store>, id: String) -> Result<String, String> {
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .restore(&id)
+    // Restoring copies the item back to the vaults folder, which can block
+    // on cloud-synced drives; do it without holding the workspace lock.
+    let workspace = state.workspace.lock().map_err(|e| e.to_string())?.clone();
+    workspace.restore(&id)
 }
 #[tauri::command]
 pub async fn purge_trash(

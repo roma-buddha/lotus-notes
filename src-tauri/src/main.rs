@@ -4,10 +4,10 @@ mod conversion;
 mod layout;
 mod startup;
 mod storage;
+mod storage_config;
 mod transfer;
 mod windows;
 mod workspace;
-mod storage_config;
 use notify::{event::ModifyKind, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     fs,
@@ -620,11 +620,11 @@ fn delete_entry_blocking(
     path: String,
 ) -> Result<(), String> {
     windows::check_other_views(&app, &state, window.label(), &path)?;
-    state
-        .workspace
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&path)
+    // Clone the workspace handle and release the mutex before the move:
+    // copying a cloud-only note into Trash can block for a long time, and
+    // holding the lock would freeze every other file operation.
+    let workspace = state.workspace.lock().map_err(|e| e.to_string())?.clone();
+    workspace.remove(&path)
 }
 #[tauri::command]
 async fn reveal_vault(
@@ -672,7 +672,10 @@ async fn choose_root(app: tauri::AppHandle) -> Result<bool, String> {
     let folder = folder.path().to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Store>();
-        let next = storage_config::select_vaults(&folder, state.config.parent().ok_or("Invalid app-data location")?)?;
+        let next = storage_config::select_vaults(
+            &folder,
+            state.config.parent().ok_or("Invalid app-data location")?,
+        )?;
         let _activation = state.activation.write().map_err(|e| e.to_string())?;
         storage_config::StorageConfig::from_workspace(&next).save(&state.config)?;
         *state.workspace.lock().map_err(|e| e.to_string())? = next;
@@ -693,12 +696,16 @@ struct StorageLocations {
     trash: String,
 }
 #[tauri::command]
-async fn storage_locations(app: tauri::AppHandle, reveal: Option<String>) -> Result<StorageLocations, String> {
+async fn storage_locations(
+    app: tauri::AppHandle,
+    reveal: Option<String>,
+) -> Result<StorageLocations, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Store>();
         let workspace = state.handle(None)?;
         let app_data = state.config.parent().ok_or("Invalid app-data location")?;
-        let browser_data = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(PathBuf::from)
+        let browser_data = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER")
+            .map(PathBuf::from)
             .unwrap_or(app.path().app_local_data_dir().map_err(|e| e.to_string())?);
         let workspace_data = workspace.internal_dir(".notus-state")?;
         let trash = workspace.internal_dir(".notus-trash")?;
@@ -713,11 +720,23 @@ async fn storage_locations(app: tauri::AppHandle, reveal: Option<String>) -> Res
             fs::create_dir_all(path).map_err(|e| e.to_string())?;
             std::process::Command::new("explorer.exe")
                 .arg(path.to_string_lossy().trim_start_matches("\\\\?\\"))
-                .spawn().map_err(|e| e.to_string())?;
+                .spawn()
+                .map_err(|e| e.to_string())?;
         }
-        let display = |path: &std::path::Path| path.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
-        Ok(StorageLocations { app_data: display(app_data), browser_data: display(&browser_data), workspace_data: display(&workspace_data), trash: display(&trash) })
-    }).await.map_err(|e| e.to_string())?
+        let display = |path: &std::path::Path| {
+            path.to_string_lossy()
+                .trim_start_matches("\\\\?\\")
+                .to_string()
+        };
+        Ok(StorageLocations {
+            app_data: display(app_data),
+            browser_data: display(&browser_data),
+            workspace_data: display(&workspace_data),
+            trash: display(&trash),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn import_vault(
