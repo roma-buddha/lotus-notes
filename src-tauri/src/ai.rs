@@ -436,6 +436,44 @@ pub fn ai_connections() -> Result<Vec<Connection>, String> {
         })
         .collect()
 }
+/// Tie the local runtime's lifetime to the Lotus process. Windows closes the
+/// job object as soon as Lotus exits or is terminated, killing the sidecar
+/// instead of leaving an orphaned llama-server.exe that keeps its DLLs
+/// locked and holds RAM.
+#[cfg(windows)]
+fn keep_runtime_with_parent(child: &std::process::Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) != 0;
+        let assigned = configured
+            && AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) != 0;
+        if !assigned {
+            // A launcher may already run Lotus inside its own job; fall back
+            // to the previous behavior rather than refusing to start.
+            CloseHandle(job);
+            return;
+        }
+        // Keep the job handle open for the life of the process. Leaking it is
+        // intentional: closing it early would kill the runtime immediately.
+        std::mem::forget(job);
+    }
+}
 /// Start a GGUF in the Lotus-managed llama.cpp-compatible local runtime.
 #[tauri::command]
 pub async fn ai_run_lotus(app: tauri::AppHandle, path: String) -> Result<String, String> {
@@ -501,6 +539,8 @@ pub async fn ai_run_lotus(app: tauri::AppHandle, path: String) -> Result<String,
         let child = command
             .spawn()
             .map_err(|_| "Lotus could not start its local runtime.")?;
+        #[cfg(windows)]
+        keep_runtime_with_parent(&child);
         *guard = Some(child);
     }
     let destination = endpoint("lotus", "")?;
