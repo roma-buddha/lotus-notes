@@ -382,7 +382,10 @@ impl Workspace {
     }
     pub fn read(&self, relative: &str) -> Result<Document> {
         let path = self.resolve(relative)?;
-        if !is_note(&path) || !(2..=3).contains(&depth(relative)) {
+        // Notes imported from Obsidian vaults may sit deeper than
+        // Vault/Folder/Note.md; reading must not reject them. Creation and
+        // relocation keep the flat vault -> folder -> note model.
+        if !is_note(&path) || depth(relative) < 2 {
             return Err("Open a Markdown note inside a vault.".into());
         }
         let content = fs::read_to_string(&path).map_err(err)?;
@@ -648,6 +651,28 @@ fn copy_folder(source: &Path, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deep_notes_inside_a_vault_are_readable_and_editable() {
+        let temp = tempfile::tempdir().unwrap();
+        let w = Workspace::new(temp.path().into()).unwrap();
+        w.create("", "vault", "Work").unwrap();
+        // Folders cannot be created below folder level, but an imported
+        // Obsidian vault can contain them on disk.
+        let deep = "Work/Area/Sub/Note.md";
+        fs::create_dir_all(w.resolve("Work/Area/Sub").unwrap()).unwrap();
+        fs::write(w.resolve(deep).unwrap(), "deep").unwrap();
+        assert_eq!(w.read(deep).unwrap().content, "deep");
+        let original = w.read(deep).unwrap();
+        assert_eq!(
+            w.write(deep, "edited", &original.revision)
+                .unwrap()
+                .content,
+            "edited"
+        );
+        // Non-notes and the vault directory itself stay unreadable.
+        assert!(w.read("Work").is_err());
+        assert!(w.read("Work/Area").is_err());
+    }
     #[test]
     fn hierarchy_and_cross_vault_moves() {
         let temp = tempfile::tempdir().unwrap();
