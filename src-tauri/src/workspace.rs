@@ -588,6 +588,41 @@ impl Workspace {
         Ok(name)
     }
 }
+/// Move an item, preferring a plain rename and falling back to copy + remove.
+/// Renames fail across volumes, which happens whenever the Trash lives in
+/// local app data while the vaults sit on a synced drive such as Google
+/// Drive. The original is only deleted after the copy verifies, and a
+/// partial copy is cleaned up on failure.
+pub(crate) fn move_item(source: &Path, dest: &Path) -> Result<()> {
+    if fs::rename(source, dest).is_ok() {
+        return Ok(());
+    }
+    let meta = fs::symlink_metadata(source).map_err(err)?;
+    if meta.file_type().is_symlink() {
+        return Err("Linked items are not supported inside the workspace.".into());
+    }
+    let result: Result<()> = (|| {
+        if meta.is_dir() {
+            fs::create_dir(dest).map_err(err)?;
+            copy_folder(source, dest)?;
+            fs::remove_dir_all(source).map_err(err)
+        } else {
+            fs::copy(source, dest).map_err(err)?;
+            if fs::metadata(dest).map_err(err)?.len() != meta.len() {
+                return Err("copy verification failed".into());
+            }
+            fs::remove_file(source).map_err(err)
+        }
+    })();
+    if result.is_err() {
+        if meta.is_dir() {
+            let _ = fs::remove_dir_all(dest);
+        } else {
+            let _ = fs::remove_file(dest);
+        }
+    }
+    result
+}
 fn copy_folder(source: &Path, dest: &Path) -> Result<()> {
     for entry in fs::read_dir(source).map_err(err)? {
         let entry = entry.map_err(err)?;

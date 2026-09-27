@@ -1,5 +1,5 @@
 //! Internal metadata is isolated from ordinary vault paths. Never follow links.
-use crate::workspace::{Document, Workspace};
+use crate::workspace::{move_item, Document, Workspace};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -323,7 +323,7 @@ impl Workspace {
         atomic(&directory.path().join("entry.json"), &item)?;
         // Keep the recovery directory before moving anything into it: no RAII deletion of user data.
         let directory = directory.keep();
-        fs::rename(source, directory.join("content")).map_err(err)?;
+        move_item(&source, &directory.join("content"))?;
         self.save_locks(
             &locks
                 .difference(&item.locks.into_iter().collect())
@@ -409,7 +409,7 @@ impl Workspace {
         let mut locks = self.locks()?;
         locks.extend(item.locks);
         self.save_locks(&locks)?;
-        fs::rename(directory.join("content"), destination).map_err(err)?;
+        move_item(&directory.join("content"), &destination)?;
         // Retain the tiny metadata record as a recovery/audit record. Not listed once restored.
         Ok(item.original)
     }
